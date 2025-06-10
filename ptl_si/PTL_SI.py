@@ -120,6 +120,7 @@ import numpy as np
     
 #     return p_sel_list
 
+
 import numpy as np
 import warnings
 
@@ -157,6 +158,7 @@ def _to_gpu(arr):
         return cp.asarray(_to_cpu(arr))
     return _to_cpu(arr)
 
+
 class OptimizedCompute:
     def __init__(self, use_gpu=True):
         self.use_gpu = use_gpu and GPU_AVAILABLE
@@ -176,165 +178,177 @@ class OptimizedCompute:
 
     def compute_bounds(self, psi, gamma):
         """
-        Tính bound chung, chạy trên CPU.
+        Tính khoảng chung: giải bất phương trình gamma_i + z * psi_i >= 0 với tất cả i.
+        Trả về (lower, upper).
         """
-        psi = psi.ravel()
-        gamma = gamma.ravel()
         lu, ru = -np.inf, np.inf
         for pi, gi in zip(psi, gamma):
             if pi == 0:
                 if gi < 0:
                     return np.inf, -np.inf
             elif pi > 0:
-                ru = min(ru, gi/pi)
+                ru = min(ru, gi / pi)
             else:
-                lu = max(lu, gi/pi)
+                lu = max(lu, gi / pi)
         return lu, ru
 
     def compute_bounds_3(self, psi, gamma):
-        psi_arr = self._get_array(psi)
-        gamma_arr = self._get_array(gamma)
-        lu, ru = self.compute_bounds(_to_cpu(psi_arr), _to_cpu(gamma_arr))
+        psi_cpu = _to_cpu(psi).ravel()
+        gamma_cpu = _to_cpu(gamma).ravel()
+        lu, ru = self.compute_bounds(psi_cpu, gamma_cpu)
         return [lu, ru]
 
     def compute_Zu_3(self, SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
         xp = self.xp
-        # Prepare arrays
-        SO = self._get_array(SO).ravel()
-        a = self._get_array(a).ravel()
-        b = self._get_array(b).ravel()
-        a_tilde = self._get_array(a_tilde).ravel()
-        O = np.asarray(O)
-        Oc = np.asarray(Oc)
-        XO_gpu = self._get_array(XO) if O.size > 0 else None
-        XOc_gpu = self._get_array(XOc) if Oc.size > 0 else None
+        SO = xp.asarray(SO).ravel()
+        a = xp.asarray(a).ravel()
+        b = xp.asarray(b).ravel()
+        a_tilde = xp.asarray(a_tilde).ravel()
+        O = np.asarray(O, dtype=int)
+        Oc = np.asarray(Oc, dtype=int)
 
-        total = len(O) + 2*len(Oc)
-        if total == 0:
-            return [-xp.inf, xp.inf]
+        psi_list = []
+        gamma_list = []
 
-        psi = xp.empty(total)
-        gamma = xp.empty(total)
-        idx = 0
-
-        # Case O
+        # Phần quan sát O
         if O.size > 0:
+            XO_gpu = xp.asarray(XO)
             inv = self.pinv(XO_gpu.T @ XO_gpu)
             XO_plus = inv @ XO_gpu.T
-            psi_o = -SO * (XO_plus @ b).ravel()
-            gamma_o = SO*(XO_plus@ a).ravel() - N*lambda_0*SO*(inv @ (a_tilde[O]*SO)).ravel()
-            psi[idx:idx+len(O)] = psi_o
-            gamma[idx:idx+len(O)] = gamma_o
-            idx += len(O)
+            psi0 = (-SO * (XO_plus @ b)).ravel()
+            term_inv = inv @ (a_tilde[O] * SO)
+            gamma0 = (SO * (XO_plus @ a) - N * lambda_0 * SO * term_inv).ravel()
+            psi_list.append(psi0)
+            gamma_list.append(gamma0)
 
-        # Case Oc
+        # Phần không quan sát Oc
         if Oc.size > 0:
-            # projection
+            XOc_gpu = xp.asarray(XOc)
             if O.size > 0:
-                proj = xp.eye(N) - XO_gpu @ (self.pinv(XO_gpu.T@XO_gpu) @ XO_gpu.T)
+                XO_gpu = xp.asarray(XO)
+                inv = self.pinv(XO_gpu.T @ XO_gpu)
+                proj = xp.eye(N) - XO_gpu @ (inv @ XO_gpu.T)
+                temp2 = (XOc_gpu.T @ (XO_gpu @ (inv))) @ (a_tilde[O] * SO)
+                temp2 = (temp2 / a_tilde[Oc]).ravel()
             else:
                 proj = xp.eye(N)
-            XOc_proj = XOc_gpu.T @ proj
-            denom = (a_tilde[Oc] * lambda_0 * N)[:,None]
-            temp = XOc_proj / denom
-            tb = (temp @ b).ravel()
-            ta = (temp @ a).ravel()
-            ones = xp.ones_like(ta)
-            # positive
-            psi[idx:idx+len(Oc)] = tb
-            gamma[idx:idx+len(Oc)] = ones - (XOc_proj@(a_tilde[O]*SO) if O.size>0 else 0)/a_tilde[Oc] - ta
-            # negative
-            psi[idx+len(Oc):idx+2*len(Oc)] = -tb
-            gamma[idx+len(Oc):idx+2*len(Oc)] = ones + (XOc_proj@(a_tilde[O]*SO) if O.size>0 else 0)/a_tilde[Oc] + ta
+                temp2 = xp.zeros(Oc.size)
 
+            XOc_proj = XOc_gpu.T @ proj
+            temp1 = (XOc_proj / a_tilde[Oc][:, None]) / (lambda_0 * N)
+            term_b = (temp1 @ b).ravel()
+            term_a = (temp1 @ a).ravel()
+            ones = xp.ones_like(term_a)
+
+            psi1 = xp.concatenate([term_b, -term_b])
+            gamma1 = xp.concatenate([ones - temp2 - term_a, ones + temp2 + term_a])
+            psi_list.append(psi1)
+            gamma_list.append(gamma1)
+
+        if not psi_list:
+            return [-xp.inf, xp.inf]
+        psi = xp.concatenate(psi_list)
+        gamma = xp.concatenate(gamma_list)
         return self.compute_bounds_3(psi, gamma)
 
     def compute_Zv_3(self, SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
         xp = self.xp
-        SL = self._get_array(SL).ravel()
-        a = self._get_array(a).ravel()
-        b = self._get_array(b).ravel()
-        phi_u = self._get_array(phi_u)
-        iota_u = self._get_array(iota_u).ravel()
-        L = np.asarray(L)
-        Lc = np.asarray(Lc)
-        X0L_gpu = self._get_array(X0L) if L.size>0 else None
-        X0Lc_gpu = self._get_array(X0Lc) if Lc.size>0 else None
+        SL = xp.asarray(SL).ravel()
+        a = xp.asarray(a).ravel()
+        b = xp.asarray(b).ravel()
+        phi_u = xp.asarray(phi_u)
+        iota_u = xp.asarray(iota_u).ravel()
+        L = np.asarray(L, dtype=int)
+        Lc = np.asarray(Lc, dtype=int)
 
-        total = len(L)+2*len(Lc)
-        if total==0:
-            return [-xp.inf, xp.inf]
+        nu_list = []
+        kappa_list = []
+        phi_a = (phi_u @ a) + iota_u
+        phi_b = phi_u @ b
 
-        nu = xp.empty(total)
-        kappa = xp.empty(total)
-        idx=0
-        fai = (phi_u@a)+iota_u
-        fb = phi_u@b
-        # L
-        if L.size>0:
-            inv = self.pinv(X0L_gpu.T@X0L_gpu)
-            plus = inv@X0L_gpu.T
-            nu[idx:idx+len(L)] = -SL*(plus@fb).ravel()
-            kappa[idx:idx+len(L)] = SL*(plus@fai).ravel() - nT*lambda_tilde*SL*(inv@SL).ravel()
-            idx+=len(L)
-        # Lc
-        if Lc.size>0:
-            if L.size>0:
-                proj = xp.eye(nT) - X0L_gpu@ (self.pinv(X0L_gpu.T@X0L_gpu)@X0L_gpu.T)
+        # Phần L
+        if L.size > 0:
+            X0L_gpu = xp.asarray(X0L)
+            inv = self.pinv(X0L_gpu.T @ X0L_gpu)
+            X0L_plus = inv @ X0L_gpu.T
+            nu0 = (-SL * (X0L_plus @ phi_b)).ravel()
+            term_inv = inv @ SL
+            kappa0 = (SL * (X0L_plus @ phi_a) - nT * lambda_tilde * SL * term_inv).ravel()
+            nu_list.append(nu0)
+            kappa_list.append(kappa0)
+
+        # Phần Lc
+        if Lc.size > 0:
+            X0Lc_gpu = xp.asarray(X0Lc)
+            if L.size > 0:
+                X0L_gpu = xp.asarray(X0L)
+                inv = self.pinv(X0L_gpu.T @ X0L_gpu)
+                proj = xp.eye(nT) - X0L_gpu @ (inv @ X0L_gpu.T)
+                temp2 = (X0Lc_gpu.T @ (X0L_gpu @ (inv))) @ SL
+                temp2 = temp2.ravel()
             else:
                 proj = xp.eye(nT)
-            temp = (X0Lc_gpu.T@proj)/(lambda_tilde*nT)
-            tb = (temp@fb).ravel()
-            ta = (temp@fai).ravel()
-            ones = xp.ones_like(ta)
-            nu[idx:idx+len(Lc)] = tb
-            nu[idx+len(Lc):idx+2*len(Lc)] = -tb
-            kappa[idx:idx+len(Lc)] = ones - (X0Lc_gpu.T@(SL if L.size>0 else 0)).ravel()/1 - ta
-            kappa[idx+len(Lc):idx+2*len(Lc)] = ones + (X0Lc_gpu.T@(SL if L.size>0 else 0)).ravel()/1 + ta
+                temp2 = xp.zeros(Lc.size)
 
+            temp1 = (X0Lc_gpu.T @ proj) / (lambda_tilde * nT)
+            tb = (temp1 @ phi_b).ravel()
+            ta = (temp1 @ phi_a).ravel()
+            ones = xp.ones_like(ta)
+            nu1 = xp.concatenate([tb, -tb])
+            kappa1 = xp.concatenate([ones - temp2 - ta, ones + temp2 + ta])
+            nu_list.append(nu1)
+            kappa_list.append(kappa1)
+
+        if not nu_list:
+            return [-xp.inf, xp.inf]
+        nu = xp.concatenate(nu_list)
+        kappa = xp.concatenate(kappa_list)
         return self.compute_bounds_3(nu, kappa)
 
     def compute_Zt_3(self, M, SM, Mc, xi_uv, zeta_uv, a, b):
         xp = self.xp
-        SM = self._get_array(SM).ravel()
-        a = self._get_array(a).ravel()
-        b = self._get_array(b).ravel()
-        xi_uv = self._get_array(xi_uv)
-        zeta_uv = self._get_array(zeta_uv).ravel()
-        M = np.asarray(M)
-        Mc = np.asarray(Mc)
-        total = len(M)+2*len(Mc)
-        if total==0:
+        SM = xp.asarray(SM).ravel()
+        a = xp.asarray(a).ravel()
+        b = xp.asarray(b).ravel()
+        xi_uv = xp.asarray(xi_uv)
+        zeta_uv = xp.asarray(zeta_uv).ravel()
+        M = np.asarray(M, dtype=int)
+        Mc = np.asarray(Mc, dtype=int)
+
+        omega_list = []
+        rho_list = []
+        xi_a = (xi_uv @ a) + zeta_uv
+        xi_b = xi_uv @ b
+
+        # Phần M
+        if M.size > 0:
+            omega0 = (-SM * xi_b[M]).ravel()
+            rho0 = (SM * xi_a[M]).ravel()
+            omega_list.append(omega0)
+            rho_list.append(rho0)
+
+        # Phần Mc
+        if Mc.size > 0:
+            tb = xi_b[Mc].ravel()
+            ta = xi_a[Mc].ravel()
+            omega1 = xp.concatenate([tb, -tb])
+            rho1 = xp.concatenate([-ta, ta])
+            omega_list.append(omega1)
+            rho_list.append(rho1)
+
+        if not omega_list:
             return [-xp.inf, xp.inf]
-        omega = xp.empty(total)
-        rho = xp.empty(total)
-        idx=0
-        fi = (xi_uv@a)+zeta_uv
-        fb = xi_uv@b
-        if M.size>0:
-            omega[idx:idx+len(M)] = -SM*fb[M].ravel()
-            rho[idx:idx+len(M)] = SM*fi[M].ravel()
-            idx+=len(M)
-        if Mc.size>0:
-            tb = fb[Mc].ravel()
-            ta = fi[Mc].ravel()
-            omega[idx:idx+len(Mc)] = tb
-            omega[idx+len(Mc):idx+2*len(Mc)] = -tb
-            rho[idx:idx+len(Mc)] = -ta
-            rho[idx+len(Mc):idx+2*len(Mc)] = ta
+        omega = xp.concatenate(omega_list)
+        rho = xp.concatenate(rho_list)
         return self.compute_bounds_3(omega, rho)
 
-# Instance toán tử toàn cục
+# Khởi tạo global optimizer
 _optimizer = OptimizedCompute()
 
-def compute_Zu_3(*args, **kwargs):
-    return _optimizer.compute_Zu_3(*args, **kwargs)
-
-def compute_Zv_3(*args, **kwargs):
-    return _optimizer.compute_Zv_3(*args, **kwargs)
-
-def compute_Zt_3(*args, **kwargs):
-    return _optimizer.compute_Zt_3(*args, **kwargs)
+# Tiện ích
+compute_Zu_3 = _optimizer.compute_Zu_3
+compute_Zv_3 = _optimizer.compute_Zv_3
+compute_Zt_3 = _optimizer.compute_Zt_3
 
 
 def divide_and_conquer_TF_recursive(
@@ -343,7 +357,7 @@ def divide_and_conquer_TF_recursive(
     z_min, z_max, use_gpu=True
 ):
     """
-    Phiên bản chia để trị cho bài TF, chọn CPU/GPU.
+    Phân chia để trị (recursive) cho bài TransFusion, chọn CPU/GPU.
     """
     use_gpu = use_gpu and GPU_AVAILABLE
     xp = cp if (use_gpu and cp is not None) else np
@@ -354,10 +368,8 @@ def divide_and_conquer_TF_recursive(
     B_gpu = _to_gpu(B)
     Q_gpu = _to_gpu(Q)
 
-    # Chuyển a, b lên GPU
     a_gpu = _to_gpu(a).ravel()
     b_gpu = _to_gpu(b).ravel()
-    # Tạo a_tilde cho biến kiểm soát
     a_tilde = xp.concatenate([w * xp.ones(p) for w in ak_weights] + [xp.ones(p)]).reshape(-1, 1)
 
     intervals = []
@@ -367,27 +379,23 @@ def divide_and_conquer_TF_recursive(
         if z_lo > z_hi:
             return
         z_mid = (z_lo + z_hi) / 2.0
-        # Tính Y trên GPU
         Yz = (a_gpu + b_gpu * z_mid).ravel()
         Y0z = Q_gpu @ Yz
-        # Chuyển về CPU cho routines
-        Xc = _to_cpu(X_gpu)
-        Yc = _to_cpu(Yz)
-        X0c = _to_cpu(X0_gpu)
-        Y0c = _to_cpu(Y0z)
-        Bc = _to_cpu(B_gpu)
+        Xc, Yc = _to_cpu(X_gpu), _to_cpu(Yz)
+        X0c, Y0c = _to_cpu(X0_gpu), _to_cpu(Y0z)
+        Bc, Qc = _to_cpu(B_gpu), _to_cpu(Q_gpu)
 
         tz, wz, dz, bz = transfer_learning_hdr.TransFusion(
             Xc, Yc, X0c, Y0c, Bc,
             N, p, K, lambda_0, lambda_tilde, ak_weights
         )
         thetaO, SO, O, XO, Oc, XOc = utils.construct_thetaO_SO_O_XO_Oc_XOc(tz, Xc)
-        deltaL, SL, L, X0L, Lc, X0Lc = utils.construct_detlaL_SL_L_X0L_Lc_X0Lc(dz, X0c)
+        deltaL, SL, L, X0L, Lc, X0Lc = utils.construct_detlaL_SL_L_X0L_Lc_XLc(dz, X0c)
         betaM, M, SM, Mc = utils.construct_betaM_M_SM_Mc(bz)
         phi_u, iota_u, xi_uv, zeta_uv = sub_prob.calculate_phi_iota_xi_zeta(
             Xc, SO, O, XO, X0c,
-            SL, L, X0L, p, Bc, _to_cpu(Q_gpu),
-            lambda_0, lambda_tilde, _to_cpu(a_tilde),
+            SL, L, X0L, p, Bc, Qc,
+            lambda_0, lambda_tilde, a_tilde,
             N, nT
         )
 
@@ -420,17 +428,6 @@ def divide_and_conquer_TF_recursive(
         else:
             merged.append((cl, cr))
     return merged
-    if not intervals:
-        return []
-    intervals.sort(key=lambda x:x[0])
-    merged=[intervals[0]]
-    for cl,cr in intervals[1:]:
-        il,ir=merged[-1]
-        if cl<=ir+EPS:
-            merged[-1]=(il,max(ir,cr))
-        else:
-            merged.append((cl,cr))
-    return merged
 
 
 def PTL_SI_TF_recursive(
@@ -440,40 +437,43 @@ def PTL_SI_TF_recursive(
     z_min=-20, z_max=20, use_gpu=True
 ):
     """
-    Hàm chính PTL-SI-TF, chọn CPU/GPU.
+    Hàm chính PTL-SI-TF (recursive), cho chọn CPU/GPU.
     """
     use_gpu = use_gpu and GPU_AVAILABLE
-    # Chuyển datasets CPU
-    X0c=_to_cpu(X0); Y0c=_to_cpu(Y0)
-    XS=[_to_cpu(x) for x in XS_list]
-    YS=[_to_cpu(y).ravel() for y in YS_list]
-    K=len(YS); nS=YS[0].shape[0]; nT=Y0c.shape[0]
-    N=nS*K+nT; p=X0c.shape[1]
-    # Build X,Y,B,Q
-    X=utils.construct_X(XS,X0c,p,K)
-    Y=np.concatenate(YS+[Y0c])
-    B=utils.construct_B(K,p,nS,nT)
-    Q=utils.construct_Q(nT,N)
-    # First TransFusion
-    theta_hat,w_hat,delta_hat,beta0_hat=transfer_learning_hdr.TransFusion(
-        X,Y,X0c,Y0c,B,N,p,K,lambda_0,lambda_tilde,ak_weights)
-    M_obs=[i for i in range(p) if beta0_hat[i]!=0]
-    if not M_obs: return None
-    out=[]
+    X0c, Y0c = _to_cpu(X0), _to_cpu(Y0)
+    XS = [_to_cpu(x) for x in XS_list]
+    YS = [_to_cpu(y).ravel() for y in YS_list]
+    K = len(YS)
+    nS = YS[0].shape[0]
+    nT = Y0c.shape[0]
+    N = nS * K + nT
+    p = X0c.shape[1]
+
+    X = utils.construct_X(XS, X0c, p, K)
+    Y = np.concatenate(YS + [Y0c])
+    B = utils.construct_B(K, p, nS, nT)
+    Q = utils.construct_Q(nT, N)
+
+    theta_hat, w_hat, delta_hat, beta0_hat = transfer_learning_hdr.TransFusion(
+        X, Y, X0c, Y0c, B, N, p, K, lambda_0, lambda_tilde, ak_weights
+    )
+    M_obs = [i for i in range(p) if beta0_hat[i] != 0]
+    if not M_obs:
+        return None
+
+    results = []
+    Sigma = utils.construct_Sigma(SigmaS_list, Sigma0)
     for j in M_obs:
-        etaj,etajTY=utils.construct_test_statistic(j,X0c[:,M_obs],Y,M_obs,nT,N)
-                # Không ép về scalar, giữ etaj và etajTY dưới dạng mảng nếu cần
-        a,b = utils.calculate_a_b(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N)
+        etaj, etajTY = utils.construct_test_statistic(j, X0c[:, M_obs], Y, M_obs, nT, N)
+        a, b = utils.calculate_a_b(etaj, Y, Sigma, N)
         intervals = divide_and_conquer_TF_recursive(
             X, X0c, a, b, M_obs, N, nT, K, p, B, Q,
-            lambda_0, lambda_tilde, ak_weights, z_min, z_max,
-            use_gpu=use_gpu
+            lambda_0, lambda_tilde, ak_weights,
+            z_min, z_max, use_gpu=use_gpu
         )
-        pj = utils.calculate_TN_p_value(
-            intervals, etaj, etajTY, utils.construct_Sigma(SigmaS_list, Sigma0), 0
-        )
-        out.append((j, pj))
-    return out
+        p_val = utils.calculate_TN_p_value(intervals, etaj, etajTY, Sigma, 0)
+        results.append((j, p_val))
+    return results
 
 
 
