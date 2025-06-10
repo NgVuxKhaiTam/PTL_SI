@@ -114,6 +114,7 @@
     
 #     return p_sel_list
 
+
 import numpy as np
 
 
@@ -139,14 +140,23 @@ def _compute_interval(psi: np.ndarray, gamma: np.ndarray) -> (float, float):
 def compute_Zu_2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
     """
     compute_Zu using pinv, returning (l_u, u_u).
+    Accepts Python lists or numpy arrays for indices and matrices.
     """
+    # Ensure array inputs
+    SO = np.asarray(SO)
+    O = np.asarray(O, dtype=int)
+    XO = np.asarray(XO)
+    Oc = np.asarray(Oc, dtype=int)
+    XOc = np.asarray(XOc)
+    a = np.asarray(a)
+    b = np.asarray(b)
+    a_tilde = np.asarray(a_tilde)
+
     psi_parts = []
     gamma_parts = []
 
-    Gram = None
-    Gram_pinv = None
-
-    if O.size > 0:
+    # Case O
+    if len(O) > 0:
         Gram = XO.T @ XO
         Gram_pinv = np.linalg.pinv(Gram)
         XO_plus = Gram_pinv @ XO.T
@@ -160,10 +170,10 @@ def compute_Zu_2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
         P = np.eye(N) - XO @ XO_plus
     else:
         P = np.eye(N)
-        Gram_pinv = None
 
-    if Oc.size > 0:
-        if O.size > 0:
+    # Case Oc
+    if len(Oc) > 0:
+        if len(O) > 0:
             temp2 = (XOc.T @ (XO @ Gram_pinv) @ (a_tilde[O] * SO)) / a_tilde[Oc]
         else:
             temp2 = 0
@@ -189,17 +199,26 @@ def compute_Zu_2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
 def compute_Zv_2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     """
     compute_Zv using pinv, returning (l_v, u_v).
+    Accepts lists or arrays.
     """
+    SL = np.asarray(SL)
+    L = np.asarray(L, dtype=int)
+    X0L = np.asarray(X0L)
+    Lc = np.asarray(Lc, dtype=int)
+    X0Lc = np.asarray(X0Lc)
+    phi_u = np.asarray(phi_u)
+    iota_u = np.asarray(iota_u)
+    a = np.asarray(a)
+    b = np.asarray(b)
+
     phi_b = phi_u @ b
     phi_a_iota = phi_u @ a + iota_u
 
     nu_parts = []
     kappa_parts = []
 
-    GramL = None
-    GramL_pinv = None
-
-    if L.size > 0:
+    # Case L
+    if len(L) > 0:
         GramL = X0L.T @ X0L
         GramL_pinv = np.linalg.pinv(GramL)
         X0L_plus = GramL_pinv @ X0L.T
@@ -213,10 +232,10 @@ def compute_Zv_2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
         P = np.eye(nT) - X0L @ X0L_plus
     else:
         P = np.eye(nT)
-        GramL_pinv = None
 
-    if Lc.size > 0:
-        if L.size > 0:
+    # Case Lc
+    if len(Lc) > 0:
+        if len(L) > 0:
             temp2 = X0Lc.T @ (X0L @ GramL_pinv) @ SL
         else:
             temp2 = 0
@@ -242,20 +261,29 @@ def compute_Zv_2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
 def compute_Zt_2(M, SM, Mc, xi_uv, zeta_uv, a, b):
     """
     compute_Zt using pinv, returning (l_t, u_t).
+    Accepts lists or arrays.
     """
+    M = np.asarray(M, dtype=int)
+    SM = np.asarray(SM)
+    Mc = np.asarray(Mc, dtype=int)
+    xi_uv = np.asarray(xi_uv)
+    zeta_uv = np.asarray(zeta_uv)
+    a = np.asarray(a)
+    b = np.asarray(b)
+
     xi_b = xi_uv @ b
     xi_a_z = xi_uv @ a + zeta_uv
 
     omega_parts = []
     rho_parts = []
 
-    if M.size > 0:
+    if len(M) > 0:
         omega0 = (-SM * xi_b[M]).ravel()
         rho0 = (SM * xi_a_z[M]).ravel()
         omega_parts.append(omega0)
         rho_parts.append(rho0)
 
-    if Mc.size > 0:
+    if len(Mc) > 0:
         omega1 = np.concatenate([xi_b[Mc].ravel(), -xi_b[Mc].ravel()])
         rho1 = np.concatenate([-xi_a_z[Mc].ravel(), xi_a_z[Mc].ravel()])
         omega_parts.append(omega1)
@@ -266,6 +294,7 @@ def compute_Zt_2(M, SM, Mc, xi_uv, zeta_uv, a, b):
         rho = np.concatenate(rho_parts)
         return _compute_interval(omega, rho)
     return -np.inf, np.inf
+
 
 
 import utils
