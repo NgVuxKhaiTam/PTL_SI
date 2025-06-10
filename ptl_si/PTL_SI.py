@@ -121,6 +121,26 @@ import numpy as np
 #     return p_sel_list
 
 
+import numpy as np
+import warnings
+
+# Try to import CuPy for GPU acceleration
+try:
+    import cupy as cp
+    cp_pinv = cp.linalg.pinv
+    GPU_AVAILABLE = True
+    print("GPU acceleration available with CuPy")
+except ImportError:
+    cp = np
+    cp_pinv = np.linalg.pinv
+    GPU_AVAILABLE = False
+    warnings.warn("CuPy not available, falling back to NumPy (CPU only)")
+
+import transfer_learning_hdr
+import utils
+import sub_prob
+
+
 def divide_and_conquer_TF_recursive(
     X, X0, a, b, Mobs, N, nT, K, p, B, Q,
     lambda_0, lambda_tilde, ak_weights,
@@ -129,16 +149,17 @@ def divide_and_conquer_TF_recursive(
     """
     Phiên bản CHIA ĐỂ TRỊ cải tiến, cho phép CPU/GPU linh hoạt.
     """
-    # Quyết định xp (NumPy hoặc CuPy)
+    # Chọn xp (NumPy hoặc CuPy)
+    use_gpu = use_gpu
     xp = cp if use_gpu else np
 
-    # Chuyển input lên GPU nếu cần
+    # Đưa dữ liệu lên GPU nếu cần
     X = xp.asarray(X)
     X0 = xp.asarray(X0)
     a = xp.asarray(a).ravel()
     b = xp.asarray(b).ravel()
 
-    # Tính toán trước a_tilde dùng xp
+    # Tính toán trước a_tilde
     a_tilde = xp.concatenate(
         [ak_weights[k] * xp.ones(p) for k in range(K)] + [xp.ones(p)]
     ).reshape(-1, 1)
@@ -152,15 +173,18 @@ def divide_and_conquer_TF_recursive(
 
         z_test = (current_z_min + current_z_max) / 2.0
 
-        # Tạo Yz, Y0z trên xp
+        # Tạo Yz, Y0z
         Yz = a + b * z_test
+        Yz = Yz.ravel()
         Y0z = xp.asarray(Q) @ Yz
-        # Gọi hàm chính vẫn dùng NumPy đầu ra rồi chuyển về xp
+
+        # Gọi TransFusion (trả numpy) và chuyển kết quả về xp nếu cần
         tz, wz, dz, bz = transfer_learning_hdr.TransFusion(
-            xp.asnumpy(X), xp.asnumpy(Yz), xp.asnumpy(X0),
-            xp.asnumpy(Y0z), xp.asnumpy(B), N, p, K,
+            xp.asnumpy(X), Yz, xp.asnumpy(X0), Y0z,
+            xp.asnumpy(B), N, p, K,
             lambda_0, lambda_tilde, ak_weights
         )
+
         thetaO, SO, O, XO, Oc, XOc = utils.construct_thetaO_SO_O_XO_Oc_XOc(
             tz, xp.asnumpy(X)
         )
@@ -170,17 +194,19 @@ def divide_and_conquer_TF_recursive(
         betaM, M, SM, Mc = utils.construct_betaM_M_SM_Mc(bz)
         phi_u, iota_u, xi_uv, zeta_uv = sub_prob.calculate_phi_iota_xi_zeta(
             xp.asnumpy(X), SO, O, XO, xp.asnumpy(X0),
-            SL, L, X0L, p, B, Q, lambda_0,
-            lambda_tilde, a_tilde, N, nT
+            SL, L, X0L, p, B, Q,
+            lambda_0, lambda_tilde, a_tilde, N, nT
         )
 
-        # Chạy bounds (tự động dùng GPU nếu được cấu hình)
+        # Tính bounds
         lu, ru = sub_prob.compute_Zu_3(
-            SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N
+            SO, O, XO, Oc, XOc, a, b,
+            lambda_0, a_tilde, N
         )
         lv, rv = sub_prob.compute_Zv_3(
-            SL, L, X0L, Lc, X0Lc, phi_u,
-            iota_u, a, b, lambda_tilde, nT
+            SL, L, X0L, Lc, X0Lc,
+            phi_u, iota_u, a, b,
+            lambda_tilde, nT
         )
         lt, rt = sub_prob.compute_Zt_3(
             M, SM, Mc, xi_uv, zeta_uv, a, b
@@ -214,6 +240,7 @@ def divide_and_conquer_TF_recursive(
             merged[-1] = (ll, max(rr, cr))
         else:
             merged.append((cl, cr))
+
     return merged
 
 
@@ -223,7 +250,10 @@ def PTL_SI_TF_recursive(
     SigmaS_list, Sigma0,
     z_min=-20, z_max=20, use_gpu=True
 ):
-    # Chọn xp
+    """
+    Chạy PTL SI TF với tùy chọn CPU/GPU.
+    """
+    use_gpu = use_gpu
     xp = cp if use_gpu else np
 
     # Đưa dữ liệu nguồn lên xp
@@ -246,9 +276,8 @@ def PTL_SI_TF_recursive(
     Sigma = utils.construct_Sigma(SigmaS_list, Sigma0)
 
     theta_hat, w_hat, delta_hat, beta0_hat = transfer_learning_hdr.TransFusion(
-        xp.asnumpy(X), xp.asnumpy(Y), xp.asnumpy(X0),
-        xp.asnumpy(Y0), xp.asnumpy(B), N, p, K,
-        lambda_0, lambda_tilde, ak_weights
+        xp.asnumpy(X), xp.asnumpy(Y), xp.asnumpy(X0), xp.asnumpy(Y0),
+        xp.asnumpy(B), N, p, K, lambda_0, lambda_tilde, ak_weights
     )
     M_obs = [i for i in range(p) if beta0_hat[i] != 0.0]
     if not M_obs:
@@ -260,8 +289,7 @@ def PTL_SI_TF_recursive(
     results = []
     for j in M_obs:
         etaj, etajTY = utils.construct_test_statistic(
-            j, xp.asnumpy(X0M), xp.asnumpy(Y),
-            M_obs, nT, N
+            j, xp.asnumpy(X0M), xp.asnumpy(Y), M_obs, nT, N
         )
         a, b = utils.calculate_a_b(etaj, xp.asnumpy(Y), Sigma, N)
         intervals = divide_and_conquer_TF_recursive(
