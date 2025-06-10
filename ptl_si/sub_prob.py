@@ -682,11 +682,11 @@ class OptimizedCompute:
             ones_vec = self.xp.ones_like(term_a)
             
             # Fill arrays in one go
-            psi[idx:idx+len(Oc)] = term_b
-            psi[idx+len(Oc):idx+2*len(Oc)] = -term_b
+            psi[idx:idx+len(Oc)] = term_b.ravel()
+            psi[idx+len(Oc):idx+2*len(Oc)] = (-term_b).ravel()
             
-            gamma[idx:idx+len(Oc)] = ones_vec - temp2 - term_a
-            gamma[idx+len(Oc):idx+2*len(Oc)] = ones_vec + temp2 + term_a
+            gamma[idx:idx+len(Oc)] = (ones_vec - temp2 - term_a).ravel()
+            gamma[idx+len(Oc):idx+2*len(Oc)] = (ones_vec + temp2 + term_a).ravel()
         
         return self.compute_bounds_3(psi, gamma)
     
@@ -739,11 +739,11 @@ class OptimizedCompute:
             term_a = temp1 @ phi_a_iota
             ones_vec = self.xp.ones_like(term_a)
             
-            nu[idx:idx+len(Lc)] = term_b
-            nu[idx+len(Lc):idx+2*len(Lc)] = -term_b
+            nu[idx:idx+len(Lc)] = term_b.ravel()
+            nu[idx+len(Lc):idx+2*len(Lc)] = (-term_b).ravel()
             
-            kappa[idx:idx+len(Lc)] = ones_vec - temp2 - term_a
-            kappa[idx+len(Lc):idx+2*len(Lc)] = ones_vec + temp2 + term_a
+            kappa[idx:idx+len(Lc)] = (ones_vec - temp2 - term_a).ravel()
+            kappa[idx+len(Lc):idx+2*len(Lc)] = (ones_vec + temp2 + term_a).ravel()
         
         return self.compute_bounds_3(nu, kappa)
     
