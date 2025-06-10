@@ -221,10 +221,9 @@ def PTL_SI_TF_recursive(
     X0, Y0, XS_list, YS_list,
     lambda_0, lambda_tilde, ak_weights,
     SigmaS_list, Sigma0,
-    z_min=-20, z_max=20, use_gpu=None
+    z_min=-20, z_max=20, use_gpu=True
 ):
     # Chọn xp
-    use_gpu = GPU_AVAILABLE if use_gpu is None else (use_gpu and GPU_AVAILABLE)
     xp = cp if use_gpu else np
 
     # Đưa dữ liệu nguồn lên xp
