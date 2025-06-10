@@ -127,11 +127,11 @@ import warnings
 # Thử import CuPy để tăng tốc GPU
 try:
     import cupy as cp
-    cp_pinv = cp.linalg.pinv
+    from cupy.linalg import pinv as cp_pinv
     GPU_AVAILABLE = True
     print("GPU acceleration available with CuPy")
 except ImportError:
-    cp = np
+    cp = None
     cp_pinv = np.linalg.pinv
     GPU_AVAILABLE = False
     warnings.warn("CuPy không khả dụng, chuyển sang NumPy (CPU only)")
@@ -149,64 +149,72 @@ def divide_and_conquer_TF_recursive(
     """
     Phiên bản CHIA ĐỂ TRỊ cải tiến, cho phép CPU/GPU linh hoạt.
     """
-    # Chọn xp (NumPy hoặc CuPy)
     use_gpu = use_gpu and GPU_AVAILABLE
     xp = cp if use_gpu else np
 
-    # Hàm đẩy mảng GPU về CPU nếu cần
     def _to_cpu(arr):
-        return arr.get() if hasattr(arr, 'get') else arr
+        if use_gpu and hasattr(arr, 'get'):
+            return arr.get()
+        return arr
 
-    # Đưa dữ liệu lên xp
-    X = xp.asarray(X)
-    X0 = xp.asarray(X0)
-    a = xp.asarray(a).ravel()
-    b = xp.asarray(b).ravel()
-    B = xp.asarray(B)
-    Q = xp.asarray(Q)
+    def _to_gpu(arr):
+        if use_gpu:
+            return xp.asarray(_to_cpu(arr))
+        return _to_cpu(arr)
 
-    # Tính toán trước a_tilde
+    # Chuyển toàn bộ inputs
+    X = _to_gpu(X)
+    X0 = _to_gpu(X0)
+    a = _to_gpu(a).ravel()
+    b = _to_gpu(b).ravel()
+    B = _to_gpu(B)
+    Q = _to_gpu(Q)
+    # a_tilde tính trên GPU nếu có
     a_tilde = xp.concatenate(
-        [ak_weights[k] * xp.ones(p) for k in range(K)] + [xp.ones(p)]
+        [w * xp.ones(p) for w in ak_weights] + [xp.ones(p)]
     ).reshape(-1, 1)
+    a_tilde_cpu = _to_cpu(a_tilde)
 
     intervals = []
     EPSILON = 1e-6
 
-    def _recursive_search(z_min_curr, z_max_curr):
-        if z_min_curr > z_max_curr:
+    def _recursive_search(curr_min, curr_max):
+        if curr_min > curr_max:
             return
 
-        z_test = (z_min_curr + z_max_curr) / 2.0
-
-        # Tạo Yz, Y0z trên xp
+        z_test = (curr_min + curr_max) / 2.0
+        # Tính trên GPU
         Yz = (a + b * z_test).ravel()
         Y0z = Q @ Yz
 
-        # Chuyển về CPU trước khi gọi TransFusion
-        tz, wz, dz, bz = transfer_learning_hdr.TransFusion(
-            _to_cpu(X), _to_cpu(Yz),
-            _to_cpu(X0), _to_cpu(Y0z),
-            _to_cpu(B), N, p, K,
-            lambda_0, lambda_tilde, ak_weights
-        )
+        # Chuẩn bị inputs cho CPU-based routines
+        X_cpu = _to_cpu(X)
+        Yz_cpu = _to_cpu(Yz)
+        X0_cpu = _to_cpu(X0)
+        Y0z_cpu = _to_cpu(Y0z)
+        B_cpu = _to_cpu(B)
+        Q_cpu = _to_cpu(Q)
 
-        # Các hàm utils/sub_prob đều mong numpy arrays
+        # Gọi các hàm CPU
+        tz, wz, dz, bz = transfer_learning_hdr.TransFusion(
+            X_cpu, Yz_cpu, X0_cpu, Y0z_cpu, B_cpu,
+            N, p, K, lambda_0, lambda_tilde, ak_weights
+        )
         thetaO, SO, O, XO, Oc, XOc = utils.construct_thetaO_SO_O_XO_Oc_XOc(
-            tz, _to_cpu(X)
+            tz, X_cpu
         )
         deltaL, SL, L, X0L, Lc, X0Lc = utils.construct_detlaL_SL_L_X0L_Lc_X0Lc(
-            dz, _to_cpu(X0)
+            dz, X0_cpu
         )
         betaM, M, SM, Mc = utils.construct_betaM_M_SM_Mc(bz)
         phi_u, iota_u, xi_uv, zeta_uv = sub_prob.calculate_phi_iota_xi_zeta(
-            _to_cpu(X), SO, O, XO, _to_cpu(X0),
-            SL, L, X0L, p, B, Q,
-            lambda_0, lambda_tilde, _to_cpu(a_tilde),
+            X_cpu, SO, O, XO, X0_cpu,
+            SL, L, X0L, p, B_cpu, Q_cpu,
+            lambda_0, lambda_tilde, a_tilde_cpu,
             N, nT
         )
 
-        # Tính bounds (chạy trên GPU nếu có)
+        # Tính bounds trên GPU
         lu, ru = sub_prob.compute_Zu_3(
             SO, O, XO, Oc, XOc, a, b,
             lambda_0, a_tilde, N
@@ -224,30 +232,30 @@ def divide_and_conquer_TF_recursive(
         r = min(ru, rv, rt)
 
         if r < l:
-            mid = (z_min_curr + z_max_curr) / 2.0
-            _recursive_search(z_min_curr, mid - EPSILON)
-            _recursive_search(mid + EPSILON, z_max_curr)
+            mid = (curr_min + curr_max) / 2.0
+            _recursive_search(curr_min, mid - EPSILON)
+            _recursive_search(mid + EPSILON, curr_max)
             return
 
         if M == Mobs:
             intervals.append((l, r))
 
-        _recursive_search(z_min_curr, l - EPSILON)
-        _recursive_search(r + EPSILON, z_max_curr)
+        _recursive_search(curr_min, l - EPSILON)
+        _recursive_search(r + EPSILON, curr_max)
 
-    # Khởi động đệ quy
+    # Bắt đầu
     _recursive_search(xp.array(z_min, dtype=float), xp.array(z_max, dtype=float))
 
     if not intervals:
         return []
 
     # Hợp nhất kết quả
-    intervals.sort(key=lambda t: t[0])
+    intervals.sort(key=lambda t: float(t[0]))
     merged = [intervals[0]]
     for cl, cr in intervals[1:]:
-        ll, rr = merged[-1]
-        if cl <= rr + EPSILON:
-            merged[-1] = (ll, max(rr, cr))
+        il, ir = merged[-1]
+        if cl <= ir + EPSILON:
+            merged[-1] = (il, max(ir, cr))
         else:
             merged.append((cl, cr))
     return merged
@@ -266,56 +274,53 @@ def PTL_SI_TF_recursive(
     xp = cp if use_gpu else np
 
     def _to_cpu(arr):
-        return arr.get() if hasattr(arr, 'get') else arr
+        if use_gpu and hasattr(arr, 'get'):
+            return arr.get()
+        return arr
 
-    # Đưa dữ liệu lên xp
-    X0 = xp.asarray(X0)
-    Y0 = xp.asarray(Y0)
-    XS_list = [xp.asarray(XS) for XS in XS_list]
-    YS_list = [xp.asarray(YS).ravel() for YS in YS_list]
+    # Chuẩn bị dữ liệu cho CPU routines
+    X0_cpu = _to_cpu(X0)
+    Y0_cpu = _to_cpu(Y0)
+    XS_cpu = [_to_cpu(XS) for XS in XS_list]
+    YS_cpu = [_to_cpu(YS).ravel() for YS in YS_list]
 
-    K = len(YS_list)
-    nS = YS_list[0].shape[0]
-    nT = Y0.shape[0]
+    K = len(YS_cpu)
+    nS = YS_cpu[0].shape[0]
+    nT = Y0_cpu.shape[0]
     N = nS * K + nT
-    p = X0.shape[1]
+    p = X0_cpu.shape[1]
 
-    X = xp.asarray(utils.construct_X(
-        [_to_cpu(x) for x in XS_list], _to_cpu(X0), p, K
-    ))
-    Y = xp.concatenate(YS_list + [Y0])
-    B = xp.asarray(utils.construct_B(K, p, nS, nT))
-    Sigma = utils.construct_Sigma(SigmaS_list, Sigma0)
+    X = utils.construct_X(XS_cpu, X0_cpu, p, K)
+    Y = np.concatenate(YS_cpu + [Y0_cpu])
+    B = utils.construct_B(K, p, nS, nT)
+    Q = utils.construct_Q(nT, N)
 
     theta_hat, w_hat, delta_hat, beta0_hat = transfer_learning_hdr.TransFusion(
-        _to_cpu(X), _to_cpu(Y),
-        _to_cpu(X0), _to_cpu(Y0),
-        _to_cpu(B), N, p, K,
+        X, Y, X0_cpu, Y0_cpu, B, N, p, K,
         lambda_0, lambda_tilde, ak_weights
     )
     M_obs = [i for i in range(p) if beta0_hat[i] != 0.0]
     if not M_obs:
         return None
 
-    X0M = X0[:, M_obs]
-    Q = xp.asarray(utils.construct_Q(nT, N))
-
     results = []
     for j in M_obs:
         etaj, etajTY = utils.construct_test_statistic(
-            j, _to_cpu(X0M), _to_cpu(xp.concatenate(YS_list + [Y0])),
-            M_obs, nT, N
+            j, X0_cpu[:, M_obs], Y, M_obs, nT, N
         )
-        a, b = utils.calculate_a_b(etaj, _to_cpu(xp.concatenate(YS_list + [Y0])), Sigma, N)
+        a, b = utils.calculate_a_b(
+            etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N
+        )
         intervals = divide_and_conquer_TF_recursive(
-            X, X0, a, b, M_obs,
+            X, X0_cpu, a, b, M_obs,
             N, nT, K, p, B, Q,
             lambda_0, lambda_tilde, ak_weights,
             z_min, z_max,
             use_gpu=use_gpu
         )
         pj_sel = utils.calculate_TN_p_value(
-            intervals, etaj, etajTY, Sigma, 0
+            intervals, etaj, etajTY,
+            utils.construct_Sigma(SigmaS_list, Sigma0), 0
         )
         results.append((j, pj_sel))
 
