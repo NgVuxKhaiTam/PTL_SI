@@ -430,16 +430,20 @@ def PTL_SI_TF_recursive(
     out=[]
     for j in M_obs:
         etaj,etajTY=utils.construct_test_statistic(j,X0c[:,M_obs],Y,M_obs,nT,N)
+        # Ép về Python scalar từ array
         etaj = etaj.item() if hasattr(etaj, 'item') else float(etaj)
         etajTY = etajTY.item() if hasattr(etajTY, 'item') else float(etajTY)
-        a,b=utils.calculate_a_b(etaj,Y,utils.construct_Sigma(SigmaS_list,Sigma0),N)
-        intervals=divide_and_conquer_TF_recursive(
-            X,X0c,a,b,M_obs,N,nT,K,p,B,Q,
-            lambda_0,lambda_tilde,ak_weights,z_min,z_max,use_gpu=use_gpu)
-        pj=utils.calculate_TN_p_value(intervals,etaj,etajTY,utils.construct_Sigma(SigmaS_list,Sigma0),0)
-        out.append((j,pj))
+        a,b = utils.calculate_a_b(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N)
+        intervals = divide_and_conquer_TF_recursive(
+            X, X0c, a, b, M_obs, N, nT, K, p, B, Q,
+            lambda_0, lambda_tilde, ak_weights, z_min, z_max,
+            use_gpu=use_gpu
+        )
+        pj = utils.calculate_TN_p_value(
+            intervals, etaj, etajTY, utils.construct_Sigma(SigmaS_list, Sigma0), 0
+        )
+        out.append((j, pj))
     return out
-
 
 
 
