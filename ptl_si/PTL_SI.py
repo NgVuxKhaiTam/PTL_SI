@@ -116,186 +116,157 @@
 
 
 import numpy as np
-
-
-def _compute_interval(psi: np.ndarray, gamma: np.ndarray) -> (float, float):
-    """
-    Vectorized computation of the feasible interval [l, u] given psi, gamma.
-    Returns (l, u), where l = max(gamma/psi for psi<0), u = min(gamma/psi for psi>0).
-    If any psi==0 with gamma<0, returns (inf, -inf) (infeasible).
-    """
-    zero_mask = psi == 0
-    if np.any(zero_mask & (gamma < 0)):
-        return np.inf, -np.inf
-
-    pos_mask = psi > 0
-    u = np.min(gamma[pos_mask] / psi[pos_mask]) if np.any(pos_mask) else np.inf
-
-    neg_mask = psi < 0
-    l = np.max(gamma[neg_mask] / psi[neg_mask]) if np.any(neg_mask) else -np.inf
-
-    return l, u
-
+from numpy.linalg import pinv
 
 def compute_Zu_2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
-    """
-    compute_Zu using pinv, returning (l_u, u_u).
-    Accepts Python lists or numpy arrays for indices and matrices.
-    """
-    # Ensure array inputs
-    SO = np.asarray(SO)
-    O = np.asarray(O, dtype=int)
-    XO = np.asarray(XO)
-    Oc = np.asarray(Oc, dtype=int)
-    XOc = np.asarray(XOc)
-    a = np.asarray(a)
-    b = np.asarray(b)
-    a_tilde = np.asarray(a_tilde)
+    a_tilde_O = a_tilde[O]
+    a_tilde_Oc = a_tilde[Oc]
 
-    psi_parts = []
-    gamma_parts = []
-
-    # Case O
     if len(O) > 0:
-        Gram = XO.T @ XO
-        Gram_pinv = np.linalg.pinv(Gram)
-        XO_plus = Gram_pinv @ XO.T
-
-        psi0 = (-SO * (XO_plus @ b)).ravel()
-        gamma0 = (SO * (XO_plus @ a) - N * lambda_0 * SO * (Gram_pinv @ (a_tilde[O] * SO))).ravel()
-
-        psi_parts.append(psi0)
-        gamma_parts.append(gamma0)
-
-        P = np.eye(N) - XO @ XO_plus
+        XO_plus = pinv(XO)
+        inv = XO_plus.T @ XO_plus
+        XO_plus_b = XO_plus @ b
+        psi0 = (-SO * XO_plus_b).ravel()
+        XO_plus_a = XO_plus @ a
+        gamma0_term = inv @ (a_tilde_O * SO)
+        gamma0 = (SO * XO_plus_a - N * lambda_0 * SO * gamma0_term).ravel()
     else:
-        P = np.eye(N)
+        psi0 = np.array([])
+        gamma0 = np.array([])
 
-    # Case Oc
     if len(Oc) > 0:
-        if len(O) > 0:
-            temp2 = (XOc.T @ (XO @ Gram_pinv) @ (a_tilde[O] * SO)) / a_tilde[Oc]
-        else:
+        if len(O) == 0:
+            proj_b = b
+            proj_a = a
             temp2 = 0
+        else:
+            XO_XO_plus_b = XO @ XO_plus_b
+            proj_b = b - XO_XO_plus_b
+            XO_XO_plus_a = XO @ XO_plus_a
+            proj_a = a - XO_XO_plus_a
+            XO_inv = XO @ inv
+            temp2 = (XOc.T @ XO_inv @ (a_tilde_O * SO)) / a_tilde_Oc
 
-        temp1 = (XOc.T @ P) / (lambda_0 * N * a_tilde[Oc][:, None])
-        Tb = temp1 @ b
-        Ta = temp1 @ a
+        XOc_T_proj_b = XOc.T @ proj_b
+        temp1_b = XOc_T_proj_b / a_tilde_Oc / (lambda_0 * N)
+        psi1 = np.concatenate([temp1_b.ravel(), -temp1_b.ravel()])
 
-        psi1 = np.concatenate([Tb.ravel(), -Tb.ravel()])
-        ones = np.ones_like(Ta)
-        gamma1 = np.concatenate([(ones - temp2 - Ta).ravel(), (ones + temp2 + Ta).ravel()])
+        XOc_T_proj_a = XOc.T @ proj_a
+        temp1_a = XOc_T_proj_a / a_tilde_Oc / (lambda_0 * N)
+        ones_vec = np.ones_like(temp1_a)
+        gamma1 = np.concatenate([(ones_vec - temp2 - temp1_a).ravel(), (ones_vec + temp2 + temp1_a).ravel()])
+    else:
+        psi1 = np.array([])
+        gamma1 = np.array([])
 
-        psi_parts.append(psi1)
-        gamma_parts.append(gamma1)
+    psi = np.concatenate((psi0, psi1))
+    gamma = np.concatenate((gamma0, gamma1))
 
-    if psi_parts:
-        psi = np.concatenate(psi_parts)
-        gamma = np.concatenate(gamma_parts)
-        return _compute_interval(psi, gamma)
-    return -np.inf, np.inf
+    mask_zero = psi == 0
+    if np.any(gamma[mask_zero] < 0):
+        return [np.inf, -np.inf]
 
+    mask_pos = psi > 0
+    ru = np.min(gamma[mask_pos] / psi[mask_pos]) if np.any(mask_pos) else np.inf
+
+    mask_neg = psi < 0
+    lu = np.max(gamma[mask_neg] / psi[mask_neg]) if np.any(mask_neg) else -np.inf
+
+    return [lu, ru]
 
 def compute_Zv_2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
-    """
-    compute_Zv using pinv, returning (l_v, u_v).
-    Accepts lists or arrays.
-    """
-    SL = np.asarray(SL)
-    L = np.asarray(L, dtype=int)
-    X0L = np.asarray(X0L)
-    Lc = np.asarray(Lc, dtype=int)
-    X0Lc = np.asarray(X0Lc)
-    phi_u = np.asarray(phi_u)
-    iota_u = np.asarray(iota_u)
-    a = np.asarray(a)
-    b = np.asarray(b)
-
+    phi_a_iota = (phi_u @ a) + iota_u
     phi_b = phi_u @ b
-    phi_a_iota = phi_u @ a + iota_u
 
-    nu_parts = []
-    kappa_parts = []
-
-    # Case L
     if len(L) > 0:
-        GramL = X0L.T @ X0L
-        GramL_pinv = np.linalg.pinv(GramL)
-        X0L_plus = GramL_pinv @ X0L.T
-
-        nu0 = (-SL * (X0L_plus @ phi_b)).ravel()
-        kappa0 = (SL * (X0L_plus @ phi_a_iota) - nT * lambda_tilde * SL * (GramL_pinv @ SL)).ravel()
-
-        nu_parts.append(nu0)
-        kappa_parts.append(kappa0)
-
-        P = np.eye(nT) - X0L @ X0L_plus
+        X0L_plus = pinv(X0L)
+        inv = X0L_plus.T @ X0L_plus
+        X0L_plus_phi_b = X0L_plus @ phi_b
+        nu0 = (-SL * X0L_plus_phi_b).ravel()
+        X0L_plus_phi_a_iota = X0L_plus @ phi_a_iota
+        kappa0_term = inv @ SL
+        kappa0 = (SL * X0L_plus_phi_a_iota - nT * lambda_tilde * SL * kappa0_term).ravel()
     else:
-        P = np.eye(nT)
+        nu0 = np.array([])
+        kappa0 = np.array([])
 
-    # Case Lc
     if len(Lc) > 0:
-        if len(L) > 0:
-            temp2 = X0Lc.T @ (X0L @ GramL_pinv) @ SL
-        else:
+        if len(L) == 0:
+            proj_phi_b = phi_b
+            proj_phi_a_iota = phi_a_iota
             temp2 = 0
+        else:
+            X0L_X0L_plus_phi_b = X0L @ X0L_plus_phi_b
+            proj_phi_b = phi_b - X0L_X0L_plus_phi_b
+            X0L_X0L_plus_phi_a_iota = X0L @ X0L_plus_phi_a_iota
+            proj_phi_a_iota = phi_a_iota - X0L_X0L_plus_phi_a_iota
+            X0L_inv = X0L @ inv
+            temp2 = X0Lc.T @ X0L_inv @ SL
 
-        temp1 = (X0Lc.T @ P) / (lambda_tilde * nT)
-        Tb = temp1 @ phi_b
-        Ta = temp1 @ phi_a_iota
+        X0Lc_T_proj_phi_b = X0Lc.T @ proj_phi_b
+        temp1_b = X0Lc_T_proj_phi_b / (lambda_tilde * nT)
+        nu1 = np.concatenate([temp1_b.ravel(), -temp1_b.ravel()])
 
-        nu1 = np.concatenate([Tb.ravel(), -Tb.ravel()])
-        ones = np.ones_like(Ta)
-        kappa1 = np.concatenate([(ones - temp2 - Ta).ravel(), (ones + temp2 + Ta).ravel()])
+        X0Lc_T_proj_phi_a_iota = X0Lc.T @ proj_phi_a_iota
+        temp1_a = X0Lc_T_proj_phi_a_iota / (lambda_tilde * nT)
+        ones_vec = np.ones_like(temp1_a)
+        kappa1 = np.concatenate([(ones_vec - temp2 - temp1_a).ravel(), (ones_vec + temp2 + temp1_a).ravel()])
+    else:
+        nu1 = np.array([])
+        kappa1 = np.array([])
 
-        nu_parts.append(nu1)
-        kappa_parts.append(kappa1)
+    nu = np.concatenate((nu0, nu1))
+    kappa = np.concatenate((kappa0, kappa1))
 
-    if nu_parts:
-        nu = np.concatenate(nu_parts)
-        kappa = np.concatenate(kappa_parts)
-        return _compute_interval(nu, kappa)
-    return -np.inf, np.inf
+    mask_zero = nu == 0
+    if np.any(kappa[mask_zero] < 0):
+        return [np.inf, -np.inf]
 
+    mask_pos = nu > 0
+    rv = np.min(kappa[mask_pos] / nu[mask_pos]) if np.any(mask_pos) else np.inf
+
+    mask_neg = nu < 0
+    lv = np.max(kappa[mask_neg] / nu[mask_neg]) if np.any(mask_neg) else -np.inf
+
+    return [lv, rv]
 
 def compute_Zt_2(M, SM, Mc, xi_uv, zeta_uv, a, b):
-    """
-    compute_Zt using pinv, returning (l_t, u_t).
-    Accepts lists or arrays.
-    """
-    M = np.asarray(M, dtype=int)
-    SM = np.asarray(SM)
-    Mc = np.asarray(Mc, dtype=int)
-    xi_uv = np.asarray(xi_uv)
-    zeta_uv = np.asarray(zeta_uv)
-    a = np.asarray(a)
-    b = np.asarray(b)
-
+    xi_a_zeta = (xi_uv @ a) + zeta_uv
     xi_b = xi_uv @ b
-    xi_a_z = xi_uv @ a + zeta_uv
-
-    omega_parts = []
-    rho_parts = []
 
     if len(M) > 0:
-        omega0 = (-SM * xi_b[M]).ravel()
-        rho0 = (SM * xi_a_z[M]).ravel()
-        omega_parts.append(omega0)
-        rho_parts.append(rho0)
+        Dt_xi_a_zeta = xi_a_zeta[M]
+        Dt_xi_b = xi_b[M]
+        omega0 = (-SM * Dt_xi_b).ravel()
+        rho0 = (SM * Dt_xi_a_zeta).ravel()
+    else:
+        omega0 = np.array([])
+        rho0 = np.array([])
 
     if len(Mc) > 0:
-        omega1 = np.concatenate([xi_b[Mc].ravel(), -xi_b[Mc].ravel()])
-        rho1 = np.concatenate([-xi_a_z[Mc].ravel(), xi_a_z[Mc].ravel()])
-        omega_parts.append(omega1)
-        rho_parts.append(rho1)
+        Dtc_xi_a_zeta = xi_a_zeta[Mc]
+        Dtc_xi_b = xi_b[Mc]
+        omega1 = np.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
+        rho1 = np.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
+    else:
+        omega1 = np.array([])
+        rho1 = np.array([])
 
-    if omega_parts:
-        omega = np.concatenate(omega_parts)
-        rho = np.concatenate(rho_parts)
-        return _compute_interval(omega, rho)
-    return -np.inf, np.inf
+    omega = np.concatenate((omega0, omega1))
+    rho = np.concatenate((rho0, rho1))
 
+    mask_zero = omega == 0
+    if np.any(rho[mask_zero] < 0):
+        return [np.inf, -np.inf]
 
+    mask_pos = omega > 0
+    rt = np.min(rho[mask_pos] / omega[mask_pos]) if np.any(mask_pos) else np.inf
+
+    mask_neg = omega < 0
+    lt = np.max(rho[mask_neg] / omega[mask_neg]) if np.any(mask_neg) else -np.inf
+
+    return [lt, rt]
+    
 
 import utils
 import transfer_learning_hdr
