@@ -510,7 +510,7 @@ def PTL_SI_TF_recursive(X0, Y0, XS_list, YS_list, lambda_0, lambda_tilde, ak_wei
         etaj, etajTY = utils.construct_test_statistic(j, X0M, Y, M_obs, nT, N)
         a, b = utils.calculate_a_b(etaj, Y, Sigma, N)
         
-        intervals = divide_and_conquer_TF(
+        intervals = divide_and_conquer_TF_recursive(
             X, X0, a, b, M_obs, N, nT, K, p, B, Q, 
             lambda_0, lambda_tilde, ak_weights, z_min, z_max
         )
