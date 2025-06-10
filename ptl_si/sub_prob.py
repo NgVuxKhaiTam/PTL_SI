@@ -492,7 +492,7 @@ import warnings
 # Try to import CuPy for GPU acceleration
 try:
     import cupy as cp
-    from cupyx.scipy.linalg import pinv as cp_pinv
+    cp_pinv = cp.linalg.pinv  # Dùng pinv của cupy
     GPU_AVAILABLE = True
     print("GPU acceleration available with CuPy")
 except ImportError:
