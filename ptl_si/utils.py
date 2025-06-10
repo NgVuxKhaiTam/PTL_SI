@@ -1,248 +1,312 @@
 import numpy as np
-from scipy.linalg import block_diag
-from mpmath import mp
-mp.dps = 500
-
-def construct_X(XS_list, X0, p, K):
-    blocks = []
-    for k in range(K):
-        Xk = XS_list[k]
-        row_k = np.hstack([Xk if i == k else np.zeros((Xk.shape[0], p)) for i in range(K)] + [Xk])
-        blocks.append(row_k)
-    row_0 = np.hstack([np.zeros((X0.shape[0], K*p)), X0])
-    blocks.append(row_0)
-    return np.vstack(blocks)
+from numpy.linalg import pinv
 
 
-def construct_B(K, p, nS, nT):
-    B = np.hstack([np.tile(nS * np.eye(p), K), (nS * K + nT) * np.eye(p)])
-    return B
+def compute_Zu(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
+    a_tilde_O = a_tilde[O]
+    a_tilde_Oc = a_tilde[Oc]
 
+    psi0 = np.array([])
+    gamma0 = np.array([])
+    psi1 = np.array([])
+    gamma1 = np.array([])
 
-def construct_Sigma(SigmaS_list, Sigma0):
-    Sigma = block_diag(*SigmaS_list, Sigma0)
-    return Sigma
-
-
-def compute_adaptive_weights(K, nS, nT):
-    ak = 8.0 * np.sqrt(nS / (K * nS + nT))
-    return [ak] * K
-
-
-def construct_Q(nT, N):
-    Q = np.zeros((nT, N))
-    Q[:, N - nT: ] = np.eye(nT)
-    return Q
-
-
-def construct_P(nT, nI):
-    P = np.zeros((nI, nI + nT))
-    P[ :, : nI] = np.eye(nI)
-    return P
-
-#______________________________________________________________________________________
-# CONSTRUCT ACTIVE SET
-def construct_thetaO_SO_O_XO_Oc_XOc(theta_hat, X):
-    thetaO = []
-    SO = []
-    O = []
-    Oc = []
-
-    for i, val in enumerate(theta_hat):
-        if val == 0.0:
-            Oc.append(i)
-        else:
-            O.append(i)
-            thetaO.append(val)
-            SO.append(np.sign(val))
-
-
-    XO = X[:, O] if O else np.zeros((X.shape[0], 0))
-    XOc = X[:, Oc] if Oc else np.zeros((X.shape[0], 0))
-
-    thetaO = np.array(thetaO).reshape(-1,1)
-    SO = np.array(SO).reshape(-1,1)
-
-    return thetaO, SO, O, XO, Oc, XOc
-
-
-def construct_detlaL_SL_L_X0L_Lc_X0Lc(delta_hat, X0):
-    deltaL = []
-    SL = []
-    L = []
-    Lc = []
-
-    for i, val in enumerate(delta_hat):
-        if val == 0.0:
-            Lc.append(i)
-
-        else:
-            L.append(i)
-            deltaL.append(val)
-            SL.append(np.sign(val))
-
-    X0L = X0[:, L] if L else np.zeros((X0.shape[0], 0))
-    X0Lc = X0[:, Lc] if Lc else np.zeros((X0.shape[0], 0))
-
-    deltaL = np.array(deltaL).reshape(-1,1)
-    SL = np.array(SL).reshape(-1,1)
-
-    return deltaL, SL, L, X0L, Lc, X0Lc
-
-
-def construct_betaM_M_SM_Mc(beta_hat):
-    M = []
-    betaM = []
-    SM = []
-    Mc = []
-
-    for i, val in enumerate(beta_hat):
-        if val != 0.0:
-            M.append(i)
-            SM.append(np.sign(val))
-            betaM.append(val)
-        else:
-            Mc.append(i)
-
-    SM = np.array(SM).reshape(-1,1)
-
-    return betaM, M, SM, Mc
-
-
-def construct_wO_SO_O_XIO_Oc_XIOc(w_hat, XI):
-    wO = []
-    SO = []
-    O = []
-    Oc = []
-
-    for i, val in enumerate(w_hat):
-        if val == 0.0:
-            Oc.append(i)
-        else:
-            O.append(i)
-            wO.append(val)
-            SO.append(np.sign(val))
-
-
-    XIO = XI[:, O] if O else np.zeros((XI.shape[0], 0))
-    XIOc = XI[:, Oc] if Oc else np.zeros((XI.shape[0], 0))
-
-    wO = np.array(wO).reshape(-1,1)
-    SO = np.array(SO).reshape(-1,1)
-
-    return wO, SO, O, XIO, Oc, XIOc
-
-#_____________________________________________________________________________
-# CHECK KKT
-def check_KKT_theta(XO, XOc, Y, O, Oc, thetaO, SO, lambda_0, a_tilde, N):
     if len(O) > 0:
-        e1 = XO @ thetaO.ravel() - Y
-        active_con = ((1/N) * XO.T @ e1) + (lambda_0 * a_tilde[O] * SO).ravel()
-        print ('Check Active (theta): ', np.all(np.isclose(active_con, 0)))
+        inv = pinv(XO.T @ XO)
+        XO_plus = inv @ XO.T
+
+        # Calculate psi0
+        XO_plus_b = XO_plus @ b
+        psi0 = (-SO * XO_plus_b).ravel()
+
+        # Calculate gamma0
+        XO_plus_a = XO_plus @ a
+        gamma0_term_inv = inv @ (a_tilde_O * SO)
+
+        gamma0 = SO * XO_plus_a - N * lambda_0 * SO * gamma0_term_inv
+        gamma0 = gamma0.ravel()
+
     if len(Oc) > 0:
         if len(O) == 0:
-            SOc = ((1/N) * XOc.T @ Y) / (lambda_0 * a_tilde[Oc].ravel())
+            proj = np.eye(N)
+            temp2 = 0
+
         else:
-            SOc = ((-1/N) * XOc.T @ e1) / (lambda_0 * a_tilde[Oc].ravel())
-        print ('Check In Active (theta): ', np.all(np.abs(SOc) < 1))
+            proj = np.eye(N) - XO @ XO_plus
+            XO_O_plus = XO @ inv
+            temp2 = (XOc.T @ XO_O_plus) @ (a_tilde_O * SO)
+            temp2 = temp2 / a_tilde_Oc
 
+        XOc_O_proj = XOc.T @ proj
+        temp1 = (XOc_O_proj / a_tilde_Oc) / (lambda_0 * N)
 
-def check_KKT_w(XIO, XIOc, YI, O, Oc, wO, SO, lambda_w, nI):
-    if len(O) > 0:
-        e1 = XIO @ wO.ravel() - YI
-        active_con = ((1/nI) * XIO.T @ e1) + (lambda_w * SO.ravel())
-        print ('Check Active (w): ', np.all(np.isclose(active_con, 0)))
-    
-    if len(Oc) > 0:
-        if len(O) == 0:
-            SOc = ((1/nI) * XIOc.T @ YI) / lambda_w
+        # Calculate psi1
+        term_b = temp1 @ b
+        psi1 = np.concatenate([term_b.ravel(), -term_b.ravel()])
+
+        # Calculate gamma1
+        term_a = temp1 @ a
+        ones_vec = np.ones_like(term_a)
+
+        gamma1 = np.concatenate([(ones_vec - temp2 - term_a).ravel(), (ones_vec + temp2 + term_a).ravel()])
+
+    psi = np.concatenate((psi0, psi1))
+    gamma = np.concatenate((gamma0, gamma1))
+
+    lu = -np.inf
+    ru = np.inf
+
+    for i in range(len(psi)):
+        if psi[i] == 0:
+            if gamma[i] < 0:
+                return [np.inf, -np.inf]
+        elif psi[i] > 0:
+            val = gamma[i] / psi[i]
+            if val < ru:
+                ru = val
         else:
-            SOc = ((-1/nI) * XIOc.T @ e1) / lambda_w       
-        print ('Check In Active (w): ', np.all(np.abs(SOc) < 1))
+            val = gamma[i] / psi[i]
+            if val > lu:
+                lu = val
+    return [lu, ru]
 
 
-def check_KKT_delta(X0L, X0Lc, Y, L, Lc, deltaL, SL, phi_u, iota_u, lambda_tilde, nT):
-    y = phi_u @ Y + iota_u.ravel()
+def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
+    nu0 = np.array([])
+    kappa0 = np.array([])
+    nu1 = np.array([])
+    kappa1 = np.array([])
+
+    phi_a_iota = (phi_u @  a) + iota_u
+    phi_b = phi_u @ b
+
     if len(L) > 0:
-        e1 = X0L @ deltaL.ravel() - y
-        active_con = ((1/nT) * X0L.T @ e1) + (lambda_tilde * SL.ravel())
-        print ('Check Active (delta): ', np.all(np.isclose(active_con, 0)))
+        inv = pinv(X0L.T @ X0L)
+        X0L_plus = inv @ X0L.T
 
-    
+        # Calculate nu0
+        X0L_plus_phi_b = X0L_plus @ phi_b
+        nu0 = (- SL * X0L_plus_phi_b).ravel()
+
+        # Calculate kappa0
+        X0L_plus_a = X0L_plus @ phi_a_iota
+        kappa0_term_inv = inv @ SL
+        kappa0 = SL * X0L_plus_a - (nT * lambda_tilde) * SL * kappa0_term_inv
+        kappa0 = kappa0.ravel()
+
     if len(Lc) > 0:
         if len(L) == 0:
-            SLc = ((1/nT) * X0Lc.T @ y) / lambda_tilde
+            proj = np.eye(nT)
+            temp2 = 0
+
         else:
-            SLc = ((-1/nT) * X0Lc.T @ e1) / lambda_tilde       
-        print ('Check In Active (delta): ', np.all(np.abs(SLc) < 1))
+            proj = np.eye(nT) - X0L@X0L_plus
 
-#_____________________________________________________________________________
-def construct_test_statistic(j, X0M, Y, M, nT, N):
-    ej = np.zeros(len(M))
-
-    for i, ac in enumerate(M):
-        if ac == j:
-            ej[i] = 1
-            break
-
-    inv = np.linalg.pinv(X0M.T@X0M)
-    X0M_inv = X0M @ inv
-
-    _X = np.zeros((N, len(M)))
-    _X[N - nT :, :] = X0M_inv
-    etaj = _X @ ej
-    etajTY = float(etaj @ Y)
-
-    return etaj.reshape(-1, 1), etajTY
+            X0L_T_plus = X0L @ inv
+            temp2 = (X0Lc.T @ X0L_T_plus) @ SL
 
 
-def calculate_a_b(etaj, Y, Sigma, N):
-    e1 = etaj.T @ Sigma @ etaj
-    b = (Sigma @ etaj)/e1
+        X0Lc_T_proj = X0Lc.T @ proj
+        temp1 = X0Lc_T_proj / (lambda_tilde * nT)
 
-    e2 = np.eye(N) - b @ etaj.T
-    a = e2 @ Y
+        # Calculate nu1
+        term_b = temp1 @ phi_b
+        nu1 = np.concatenate([term_b.ravel(), -term_b.ravel()])
 
-    return a.reshape(-1, 1), b.reshape(-1, 1)
+        # Calculate kappa1
+        term_a = temp1 @ phi_a_iota
+        ones_vec = np.ones_like(term_a)
+        kappa1 = np.concatenate([(ones_vec - temp2 - term_a).ravel(), (ones_vec + temp2 + term_a).ravel()])
 
+    nu = np.concatenate((nu0, nu1))
+    kappa = np.concatenate((kappa0, kappa1))
 
-def merge_intervals(intervals, tol=1e-2):
-    intervals = sorted(intervals, key=lambda x: x[0])
-    merged = []
-    for interval in intervals:
-        if not merged or interval[0] - merged[-1][1] > tol:
-            merged.append(interval)
+    lv = -np.inf
+    rv = np.inf
+
+    for i in range(len(nu)):
+        if nu[i] == 0:
+            if kappa[i] < 0:
+                return [np.inf, -np.inf]
+        elif nu[i] > 0:
+            val = kappa[i] / nu[i]
+            if val < rv:
+                rv = val
         else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], interval[1]))
-    return merged
+            val = kappa[i] / nu[i]
+            if val > lv:
+                lv = val
+
+    return [lv, rv]
 
 
-def pivot(intervals, etajTy, etaj, Sigma, tn_mu=0):
-    if len(intervals) == 0: return None #
-    intervals = merge_intervals(intervals, tol=1e-2)
+def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
+    omega0 = np.array([])
+    rho0 = np.array([])
+    omega1 = np.array([])
+    rho1 = np.array([])
 
-    etaj = etaj.ravel()
-    stdev = np.sqrt(etaj @ (Sigma @ etaj))
+    xi_a_zeta = (xi_uv @  a) + zeta_uv
+    xi_b = xi_uv @ b
 
-    numerator = mp.mpf('0')
-    denominator = mp.mpf('0')
+    if len(M) > 0:
+        Dt_xi_a_zeta = xi_a_zeta[M]
+        Dt_xi_b = xi_b[M]
 
-    for (left, right) in intervals:
-        cdf_left= mp.ncdf((left- tn_mu)/ stdev)
-        cdf_right= mp.ncdf((right- tn_mu)/ stdev)
-        piece = cdf_right- cdf_left
-        denominator += piece
+        # Calculate omega0, rho0
+        omega0 = (-SM * Dt_xi_b).ravel()
+        rho0 = (SM * Dt_xi_a_zeta).ravel()
 
-        if etajTy >= right:
-            numerator += piece
-        elif left <= etajTy < right:
-            numerator += mp.ncdf((etajTy - tn_mu)/ stdev) - cdf_left
+    if len(Mc) > 0:
+        Dtc_xi_a_zeta = xi_a_zeta[Mc]
+        Dtc_xi_b = xi_b[Mc]
 
-    if denominator == 0:
-        return None
-    return float(numerator/ denominator)
+        # Calculate omega1, rho1
+        omega1 = np.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
+        rho1 = np.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
+
+    omega = np.concatenate((omega0, omega1))
+    rho = np.concatenate((rho0, rho1))
+
+    lt = -np.inf
+    rt = np.inf
+
+    for i in range(len(omega)):
+        if omega[i] == 0:
+            if rho[i] < 0:
+                return [np.inf, -np.inf]
+        elif omega[i] > 0:
+            val = rho[i] / omega[i]
+            if val < rt:
+                rt = val
+        else:
+            val = rho[i] / omega[i]
+            if val > lt:
+                lt = val
+
+    return [lt, rt]
+
+def compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
+    psi0 = np.array([])
+    gamma0 = np.array([])
+    psi1 = np.array([])
+    gamma1 = np.array([])
+
+    if len(O) > 0:
+        inv = pinv(XIO.T @ XIO)
+        XIO_plus = inv @ XIO.T
+
+        # Calculate psi0
+        XIO_plus_Pb = XIO_plus @ P @ b
+        psi0 = (-SO * XIO_plus_Pb).ravel()
+
+        # Calculate gamma0
+        XIO_plus_Pa = XIO_plus @ P @ a
+        gamma0_term_inv = inv @ SO
+
+        gamma0 = SO * XIO_plus_Pa - nI * lambda_w * SO * gamma0_term_inv
+        gamma0 = gamma0.ravel()
+
+    if len(Oc) > 0:
+        if len(O) == 0:
+            proj = np.eye(nI)
+            temp2 = 0
+
+        else:
+            proj = np.eye(nI) - XIO @ XIO_plus
+            XIO_T_plus = XIO @ inv
+            temp2 = (XIOc.T @ XIO_T_plus) @ SO
+
+        XIOc_T_proj = XIOc.T @ proj
+        temp1 = XIOc_T_proj / (lambda_w * nI)
+
+        # Calculate psi1
+        term_Pb = temp1 @ P @ b
+        psi1 = np.concatenate([term_Pb.ravel(), - term_Pb.ravel()])
+
+        # Calculate gamma1
+        term_Pa = temp1 @ P @ a
+        ones_vec = np.ones_like(term_Pa)
+
+        gamma1 = np.concatenate([(ones_vec - temp2 - term_Pa).ravel(), (ones_vec + temp2 + term_Pa).ravel()])
 
 
-def calculate_TN_p_value(intervals, etaj, etajTy, Sigma, tn_mu=0.0):
-    cdf = pivot(intervals, etajTy, etaj, Sigma, tn_mu)
-    return 2.0 * min(cdf, 1.0 - cdf)
+    psi = np.concatenate((psi0, psi1))
+    gamma = np.concatenate((gamma0, gamma1))
+
+    lu = -np.inf
+    ru = np.inf
+
+    for i in range(len(psi)):
+        if psi[i] == 0:
+            if gamma[i] < 0:
+                return [np.inf, -np.inf]
+        elif psi[i] > 0:
+            val = gamma[i] / psi[i]
+            if val < ru:
+                ru = val
+        else:
+            val = gamma[i] / psi[i]
+            if val > lu:
+                lu = val
+
+    return [lu, ru]
+
+
+def calculate_phi_iota_xi_zeta(X, SO, O, XO, X0, SL, L, X0L, p, B, Q, lambda_0, lambda_tilde, a_tilde, N, nT):
+    phi_u = Q.copy()
+    iota_u = np.zeros((nT, 1))
+    xi_uv = np.zeros((p, N))
+    zeta_uv = np.zeros((p, 1))
+
+    if len(O) > 0:
+        a_tilde_O = a_tilde[O]
+        Eu = np.eye(X.shape[1])[:, O]
+        inv_XOT_XO = pinv(XO.T @ XO)
+        XO_plus = inv_XOT_XO @ XO.T
+        X0_B_Eu = X0 @ B @ Eu
+        B_Eu_inv_XOT_XO = B @ Eu @ inv_XOT_XO
+
+        phi_u -= (1.0 / N) * (X0_B_Eu @ XO_plus)
+        iota_u = lambda_0 * (X0_B_Eu @ inv_XOT_XO) @ (a_tilde_O * SO)
+
+        xi_uv += (1.0 / N) * (B_Eu_inv_XOT_XO @ XO.T)
+        zeta_uv += -lambda_0 * B_Eu_inv_XOT_XO @ (a_tilde_O * SO)
+
+    if len(L) > 0:
+        Fv = np.eye(p)[:, L]
+        inv_X0LT_X0L = pinv(X0L.T @ X0L)
+        X0L_plus = inv_X0LT_X0L @ X0L.T
+
+        xi_uv += Fv @ X0L_plus @ phi_u
+        zeta_uv += Fv @ inv_X0LT_X0L @ (X0L.T @ iota_u - (nT * lambda_tilde) * SL)
+
+    return phi_u, iota_u, xi_uv, zeta_uv
+
+
+def calculate_phi_iota_xi_zeta_otl(XI, SO, O, XIO, X0, SL, L, X0L, p, Q, P, lambda_w, lambda_del, nI, nT):
+    phi_u = Q.copy()
+    iota_u = np.zeros((nT, 1))
+    xi_uv = np.zeros((p, nI + nT))
+    zeta_uv = np.zeros((p, 1))
+
+    if len(O) > 0:
+        Eu = np.eye(XI.shape[1])[:, O]
+        inv_XIO_T_XIO = pinv(XIO.T @ XIO)
+        XIO_plus = inv_XIO_T_XIO @ XIO.T
+        X0_Eu = X0 @ Eu
+
+        phi_u -= X0_Eu @ XIO_plus @ P
+        iota_u = (nI * lambda_w) * (X0_Eu @ inv_XIO_T_XIO @ SO)
+        xi_uv += Eu @ XIO_plus @ P
+        zeta_uv += -(nI * lambda_w) * (Eu @  inv_XIO_T_XIO @ SO)
+
+    if len(L) > 0:
+        Fv = np.eye(p)[:, L]
+        inv_X0L_T_X0L = pinv(X0L.T @ X0L)
+        X0L_plus = inv_X0L_T_X0L @ X0L.T
+
+        xi_uv += Fv @ X0L_plus @ phi_u
+        zeta_uv += Fv @ inv_X0L_T_X0L @ (X0L.T @ iota_u - (nT * lambda_del) * SL)
+
+    return phi_u, iota_u, xi_uv, zeta_uv
