@@ -114,6 +114,158 @@
     
 #     return p_sel_list
 
+import numpy as np
+
+
+def _compute_interval(psi: np.ndarray, gamma: np.ndarray) -> (float, float):
+    """
+    Vectorized computation of the feasible interval [l, u] given psi, gamma.
+    Returns (l, u), where l = max(gamma/psi for psi<0), u = min(gamma/psi for psi>0).
+    If any psi==0 with gamma<0, returns (inf, -inf) (infeasible).
+    """
+    zero_mask = psi == 0
+    if np.any(zero_mask & (gamma < 0)):
+        return np.inf, -np.inf
+
+    pos_mask = psi > 0
+    u = np.min(gamma[pos_mask] / psi[pos_mask]) if np.any(pos_mask) else np.inf
+
+    neg_mask = psi < 0
+    l = np.max(gamma[neg_mask] / psi[neg_mask]) if np.any(neg_mask) else -np.inf
+
+    return l, u
+
+
+def compute_Zu_2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
+    """
+    compute_Zu using pinv, returning (l_u, u_u).
+    """
+    psi_parts = []
+    gamma_parts = []
+
+    Gram = None
+    Gram_pinv = None
+
+    if O.size > 0:
+        Gram = XO.T @ XO
+        Gram_pinv = np.linalg.pinv(Gram)
+        XO_plus = Gram_pinv @ XO.T
+
+        psi0 = (-SO * (XO_plus @ b)).ravel()
+        gamma0 = (SO * (XO_plus @ a) - N * lambda_0 * SO * (Gram_pinv @ (a_tilde[O] * SO))).ravel()
+
+        psi_parts.append(psi0)
+        gamma_parts.append(gamma0)
+
+        P = np.eye(N) - XO @ XO_plus
+    else:
+        P = np.eye(N)
+        Gram_pinv = None
+
+    if Oc.size > 0:
+        if O.size > 0:
+            temp2 = (XOc.T @ (XO @ Gram_pinv) @ (a_tilde[O] * SO)) / a_tilde[Oc]
+        else:
+            temp2 = 0
+
+        temp1 = (XOc.T @ P) / (lambda_0 * N * a_tilde[Oc][:, None])
+        Tb = temp1 @ b
+        Ta = temp1 @ a
+
+        psi1 = np.concatenate([Tb.ravel(), -Tb.ravel()])
+        ones = np.ones_like(Ta)
+        gamma1 = np.concatenate([(ones - temp2 - Ta).ravel(), (ones + temp2 + Ta).ravel()])
+
+        psi_parts.append(psi1)
+        gamma_parts.append(gamma1)
+
+    if psi_parts:
+        psi = np.concatenate(psi_parts)
+        gamma = np.concatenate(gamma_parts)
+        return _compute_interval(psi, gamma)
+    return -np.inf, np.inf
+
+
+def compute_Zv_2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
+    """
+    compute_Zv using pinv, returning (l_v, u_v).
+    """
+    phi_b = phi_u @ b
+    phi_a_iota = phi_u @ a + iota_u
+
+    nu_parts = []
+    kappa_parts = []
+
+    GramL = None
+    GramL_pinv = None
+
+    if L.size > 0:
+        GramL = X0L.T @ X0L
+        GramL_pinv = np.linalg.pinv(GramL)
+        X0L_plus = GramL_pinv @ X0L.T
+
+        nu0 = (-SL * (X0L_plus @ phi_b)).ravel()
+        kappa0 = (SL * (X0L_plus @ phi_a_iota) - nT * lambda_tilde * SL * (GramL_pinv @ SL)).ravel()
+
+        nu_parts.append(nu0)
+        kappa_parts.append(kappa0)
+
+        P = np.eye(nT) - X0L @ X0L_plus
+    else:
+        P = np.eye(nT)
+        GramL_pinv = None
+
+    if Lc.size > 0:
+        if L.size > 0:
+            temp2 = X0Lc.T @ (X0L @ GramL_pinv) @ SL
+        else:
+            temp2 = 0
+
+        temp1 = (X0Lc.T @ P) / (lambda_tilde * nT)
+        Tb = temp1 @ phi_b
+        Ta = temp1 @ phi_a_iota
+
+        nu1 = np.concatenate([Tb.ravel(), -Tb.ravel()])
+        ones = np.ones_like(Ta)
+        kappa1 = np.concatenate([(ones - temp2 - Ta).ravel(), (ones + temp2 + Ta).ravel()])
+
+        nu_parts.append(nu1)
+        kappa_parts.append(kappa1)
+
+    if nu_parts:
+        nu = np.concatenate(nu_parts)
+        kappa = np.concatenate(kappa_parts)
+        return _compute_interval(nu, kappa)
+    return -np.inf, np.inf
+
+
+def compute_Zt_2(M, SM, Mc, xi_uv, zeta_uv, a, b):
+    """
+    compute_Zt using pinv, returning (l_t, u_t).
+    """
+    xi_b = xi_uv @ b
+    xi_a_z = xi_uv @ a + zeta_uv
+
+    omega_parts = []
+    rho_parts = []
+
+    if M.size > 0:
+        omega0 = (-SM * xi_b[M]).ravel()
+        rho0 = (SM * xi_a_z[M]).ravel()
+        omega_parts.append(omega0)
+        rho_parts.append(rho0)
+
+    if Mc.size > 0:
+        omega1 = np.concatenate([xi_b[Mc].ravel(), -xi_b[Mc].ravel()])
+        rho1 = np.concatenate([-xi_a_z[Mc].ravel(), xi_a_z[Mc].ravel()])
+        omega_parts.append(omega1)
+        rho_parts.append(rho1)
+
+    if omega_parts:
+        omega = np.concatenate(omega_parts)
+        rho = np.concatenate(rho_parts)
+        return _compute_interval(omega, rho)
+    return -np.inf, np.inf
 
 
 import utils
