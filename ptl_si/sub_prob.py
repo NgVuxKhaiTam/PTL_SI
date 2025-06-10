@@ -488,8 +488,6 @@ def compute_Zt_2(M, SM, Mc, xi_uv, zeta_uv, a, b):
 import numpy as np
 from numpy.linalg import pinv
 import warnings
-from numba import jit, cuda
-import math
 
 # Try to import CuPy for GPU acceleration
 try:
@@ -503,13 +501,14 @@ except ImportError:
     cp_pinv = pinv
     print("CuPy not available, using CPU only")
 
-# Numba JIT compiled functions for CPU optimization
-@jit(nopython=True, cache=True)
-def compute_bounds_numba(psi, gamma):
-    """Numba optimized bound computation"""
+
+def compute_bounds(psi, gamma):
+    """Tính toán bound cho bài toán tối ưu (NumPy hoặc CuPy)"""
+    # Đảm bảo là vector 1 chiều
+    psi = psi.ravel()
+    gamma = gamma.ravel()
     lu = -np.inf
     ru = np.inf
-    
     for i in range(len(psi)):
         if psi[i] == 0:
             if gamma[i] < 0:
@@ -518,277 +517,195 @@ def compute_bounds_numba(psi, gamma):
             val = gamma[i] / psi[i]
             if val < ru:
                 ru = val
-        else:  # psi[i] < 0
+        else:
             val = gamma[i] / psi[i]
             if val > lu:
                 lu = val
     return lu, ru
 
-@jit(nopython=True, cache=True)
-def element_wise_divide_safe(numerator, denominator):
-    """Safe element-wise division with numba"""
-    result = np.empty_like(numerator)
-    for i in range(len(numerator)):
-        if denominator[i] == 0:
-            result[i] = np.inf if numerator[i] >= 0 else -np.inf
-        else:
-            result[i] = numerator[i] / denominator[i]
-    return result
-
-# GPU kernel for bound computation
-if GPU_AVAILABLE:
-    @cuda.jit
-    def compute_bounds_kernel(psi, gamma, result):
-        """CUDA kernel for bound computation"""
-        idx = cuda.grid(1)
-        if idx < psi.size:
-            if psi[idx] == 0:
-                if gamma[idx] < 0:
-                    result[0] = math.inf
-                    result[1] = -math.inf
-                    return
-            elif psi[idx] > 0:
-                val = gamma[idx] / psi[idx]
-                cuda.atomic.min(result, 1, val)  # Update ru (right upper)
-            else:
-                val = gamma[idx] / psi[idx]
-                cuda.atomic.max(result, 0, val)  # Update lu (left upper)
-
 class OptimizedCompute:
-    def __init__(self, use_gpu=None, cache_size=1000):
-        """
-        Initialize optimized compute class
-        
-        Args:
-            use_gpu: True/False to force GPU on/off, None for auto-detect
-            cache_size: Size of computation cache
-        """
+    def __init__(self, use_gpu=None):
         self.use_gpu = GPU_AVAILABLE if use_gpu is None else (use_gpu and GPU_AVAILABLE)
         self.xp = cp if self.use_gpu else np
         self.pinv_func = cp_pinv if self.use_gpu else pinv
-        self.cache = {}
-        self.cache_size = cache_size
-        
         print(f"Using {'GPU' if self.use_gpu else 'CPU'} acceleration")
-    
+
     def _get_array(self, arr):
-        """Convert to appropriate array type (GPU/CPU)"""
         if self.use_gpu and isinstance(arr, np.ndarray):
             return cp.asarray(arr)
-        elif not self.use_gpu and hasattr(arr, 'get'):  # CuPy array
+        elif not self.use_gpu and hasattr(arr, 'get'):
             return arr.get()
         return arr
-    
+
     def _to_cpu(self, arr):
-        """Convert GPU array to CPU if needed"""
         if hasattr(arr, 'get'):
             return arr.get()
         return arr
-    
-    def _cache_key(self, *args):
-        """Generate cache key from arguments"""
-        try:
-            return hash(tuple(str(arg) for arg in args if hasattr(arg, 'shape')))
-        except:
-            return None
-    
+
     def compute_bounds_3(self, psi, gamma):
-        """Ultra-optimized bound computation"""
-        psi = self._get_array(psi)
-        gamma = self._get_array(gamma)
-        
-        if self.use_gpu and len(psi) > 1000:  # Use GPU for large arrays
-            # GPU implementation
-            result = cp.array([-cp.inf, cp.inf], dtype=cp.float64)
-            
-            threads_per_block = 256
-            blocks_per_grid = (psi.size + threads_per_block - 1) // threads_per_block
-            
-            compute_bounds_kernel[blocks_per_grid, threads_per_block](psi, gamma, result)
-            
-            return self._to_cpu(result).tolist()
-        
-        else:
-            # CPU with numba optimization
-            psi_cpu = self._to_cpu(psi)
-            gamma_cpu = self._to_cpu(gamma)
-            lu, ru = compute_bounds_numba(psi_cpu, gamma_cpu)
-            return [lu, ru]
-    
+        psi = self._get_array(psi).ravel()
+        gamma = self._get_array(gamma).ravel()
+        lu, ru = compute_bounds(psi, gamma)
+        return [lu, ru]
+
     def compute_Zu_3(self, SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
-        """Ultra-optimized compute_Zu with GPU support"""
-        # Convert to appropriate arrays
-        SO = self._get_array(SO)
-        XO = self._get_array(XO) if len(O) > 0 else None
-        XOc = self._get_array(XOc) if len(Oc) > 0 else None
-        a = self._get_array(a)
-        b = self._get_array(b)
-        a_tilde = self._get_array(a_tilde)
-        
-        # Pre-allocate with exact size
+        xp = self.xp
+        SO = self._get_array(SO).ravel()
+        a = self._get_array(a).ravel()
+        b = self._get_array(b).ravel()
+        a_tilde = self._get_array(a_tilde).ravel()
+        O = np.asarray(O)
+        Oc = np.asarray(Oc)
+        XO = self._get_array(XO) if O.size > 0 else None
+        XOc = self._get_array(XOc) if Oc.size > 0 else None
+
         total_size = len(O) + 2 * len(Oc)
         if total_size == 0:
-            return [-self.xp.inf, self.xp.inf]
-        
-        psi = self.xp.empty(total_size)
-        gamma = self.xp.empty(total_size)
+            return [-xp.inf, xp.inf]
+
+        psi = xp.empty(total_size)
+        gamma = xp.empty(total_size)
         idx = 0
-        
-        # Cache key for matrix operations
-        cache_key = self._cache_key(XO) if XO is not None else None
-        
-        if len(O) > 0:
-            # Check cache for inverse
-            if cache_key and cache_key in self.cache:
-                inv, XO_plus = self.cache[cache_key]
-            else:
-                inv = self.pinv_func(XO.T @ XO)
-                XO_plus = inv @ XO.T
-                
-                # Cache result
-                if cache_key and len(self.cache) < self.cache_size:
-                    self.cache[cache_key] = (inv, XO_plus)
-            
-            # Vectorized operations
+
+        if O.size > 0:
+            inv = self.pinv_func(XO.T @ XO)
+            XO_plus = inv @ XO.T
             a_tilde_O = a_tilde[O]
-            
-            # Compute psi0 and gamma0 simultaneously
-            XO_plus_b = XO_plus @ b
-            XO_plus_a = XO_plus @ a
-            
-            psi[idx:idx+len(O)] = (-SO * XO_plus_b).ravel()
-            
-            gamma_term = inv @ (a_tilde_O * SO)
-            gamma[idx:idx+len(O)] = (SO * XO_plus_a - N * lambda_0 * SO * gamma_term).ravel()
+            SO_O = SO
+            XO_plus_b = (XO_plus @ b).ravel()
+            XO_plus_a = (XO_plus @ a).ravel()
+            psi_o = (-SO_O * XO_plus_b)
+            psi[idx:idx+len(O)] = psi_o
+
+            gamma_term = inv @ (a_tilde_O * SO_O)
+            gamma_o = (SO_O * XO_plus_a - N * lambda_0 * SO_O * gamma_term.ravel())
+            gamma[idx:idx+len(O)] = gamma_o
             idx += len(O)
-        
-        if len(Oc) > 0:
+
+        if Oc.size > 0:
             a_tilde_Oc = a_tilde[Oc]
-            
-            if len(O) == 0:
-                proj = self.xp.eye(N)
-                temp2 = self.xp.zeros(len(Oc))
+            if O.size == 0:
+                proj = xp.eye(N)
+                temp2 = xp.zeros(len(Oc))
             else:
-                proj = self.xp.eye(N) - XO @ XO_plus
+                proj = xp.eye(N) - XO @ XO_plus
                 XO_O_plus = XO @ inv
-                temp2 = ((XOc.T @ XO_O_plus) @ (a_tilde_O * SO)) / a_tilde_Oc
-            
-            # Batch operations
+                temp2 = ((XOc.T @ XO_O_plus) @ (a_tilde[O] * SO)).ravel() / a_tilde_Oc
+
             XOc_O_proj = XOc.T @ proj
-            temp1 = XOc_O_proj / (a_tilde_Oc * lambda_0 * N)
-            
-            term_b = temp1 @ b
-            term_a = temp1 @ a
-            ones_vec = self.xp.ones_like(term_a)
-            
-            # Fill arrays in one go
-            psi[idx:idx+len(Oc)] = term_b.ravel()
-            psi[idx+len(Oc):idx+2*len(Oc)] = (-term_b).ravel()
-            
-            gamma[idx:idx+len(Oc)] = (ones_vec - temp2 - term_a).ravel()
-            gamma[idx+len(Oc):idx+2*len(Oc)] = (ones_vec + temp2 + term_a).ravel()
-        
+            temp1 = XOc_O_proj / (a_tilde_Oc * lambda_0 * N)[:, None]
+
+            term_b = (temp1 @ b).ravel()
+            term_a = (temp1 @ a).ravel()
+            ones_vec = xp.ones_like(term_a)
+
+            psi[idx:idx+len(Oc)] = term_b
+            psi[idx+len(Oc):idx+2*len(Oc)] = -term_b
+
+            gamma[idx:idx+len(Oc)] = (ones_vec - temp2 - term_a)
+            gamma[idx+len(Oc):idx+2*len(Oc)] = (ones_vec + temp2 + term_a)
+
         return self.compute_bounds_3(psi, gamma)
-    
+
     def compute_Zv_3(self, SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
-        """Ultra-optimized compute_Zv with GPU support"""
-        # Convert arrays
-        SL = self._get_array(SL)
-        X0L = self._get_array(X0L) if len(L) > 0 else None
-        X0Lc = self._get_array(X0Lc) if len(Lc) > 0 else None
+        xp = self.xp
+        SL = self._get_array(SL).ravel()
+        a = self._get_array(a).ravel()
+        b = self._get_array(b).ravel()
         phi_u = self._get_array(phi_u)
-        iota_u = self._get_array(iota_u)
-        a = self._get_array(a)
-        b = self._get_array(b)
-        
+        iota_u = self._get_array(iota_u).ravel()
+        L = np.asarray(L)
+        Lc = np.asarray(Lc)
+        X0L = self._get_array(X0L) if L.size > 0 else None
+        X0Lc = self._get_array(X0Lc) if Lc.size > 0 else None
+
         total_size = len(L) + 2 * len(Lc)
         if total_size == 0:
-            return [-self.xp.inf, self.xp.inf]
-        
-        nu = self.xp.empty(total_size)
-        kappa = self.xp.empty(total_size)
+            return [-xp.inf, xp.inf]
+
+        nu = xp.empty(total_size)
+        kappa = xp.empty(total_size)
         idx = 0
-        
-        # Pre-compute common terms
+
         phi_a_iota = (phi_u @ a) + iota_u
         phi_b = phi_u @ b
-        
-        if len(L) > 0:
+
+        if L.size > 0:
             inv = self.pinv_func(X0L.T @ X0L)
             X0L_plus = inv @ X0L.T
-            
-            nu[idx:idx+len(L)] = (-SL * (X0L_plus @ phi_b)).ravel()
-            
-            kappa_temp = SL * (X0L_plus @ phi_a_iota) - (nT * lambda_tilde) * SL * (inv @ SL)
-            kappa[idx:idx+len(L)] = kappa_temp.ravel()
+            nu_l = (-SL * (X0L_plus @ phi_b).ravel())
+            kappa_l = (SL * (X0L_plus @ phi_a_iota).ravel() - nT * lambda_tilde * SL * (inv @ SL).ravel())
+            nu[idx:idx+len(L)] = nu_l
+            kappa[idx:idx+len(L)] = kappa_l
             idx += len(L)
-        
-        if len(Lc) > 0:
-            if len(L) == 0:
-                proj = self.xp.eye(nT)
-                temp2 = self.xp.zeros(len(Lc))
+
+        if Lc.size > 0:
+            if L.size == 0:
+                proj = xp.eye(nT)
+                temp2 = xp.zeros(len(Lc))
             else:
-                proj = self.xp.eye(nT) - X0L @ X0L_plus
+                proj = xp.eye(nT) - X0L @ X0L_plus
                 X0L_T_plus = X0L @ inv
-                temp2 = (X0Lc.T @ X0L_T_plus) @ SL
-            
+                temp2 = ((X0Lc.T @ X0L_T_plus) @ SL).ravel()
             X0Lc_T_proj = X0Lc.T @ proj
             temp1 = X0Lc_T_proj / (lambda_tilde * nT)
-            
-            term_b = temp1 @ phi_b
-            term_a = temp1 @ phi_a_iota
-            ones_vec = self.xp.ones_like(term_a)
-            
-            nu[idx:idx+len(Lc)] = term_b.ravel()
-            nu[idx+len(Lc):idx+2*len(Lc)] = (-term_b).ravel()
-            
-            kappa[idx:idx+len(Lc)] = (ones_vec - temp2 - term_a).ravel()
-            kappa[idx+len(Lc):idx+2*len(Lc)] = (ones_vec + temp2 + term_a).ravel()
-        
+
+            term_b = (temp1 @ phi_b).ravel()
+            term_a = (temp1 @ phi_a_iota).ravel()
+            ones_vec = xp.ones_like(term_a)
+
+            nu[idx:idx+len(Lc)] = term_b
+            nu[idx+len(Lc):idx+2*len(Lc)] = -term_b
+
+            kappa[idx:idx+len(Lc)] = (ones_vec - temp2 - term_a)
+            kappa[idx+len(Lc):idx+2*len(Lc)] = (ones_vec + temp2 + term_a)
+
         return self.compute_bounds_3(nu, kappa)
-    
+
     def compute_Zt_3(self, M, SM, Mc, xi_uv, zeta_uv, a, b):
-        """Ultra-optimized compute_Zt with GPU support"""
-        # Convert arrays
-        SM = self._get_array(SM)
+        xp = self.xp
+        SM = self._get_array(SM).ravel()
+        a = self._get_array(a).ravel()
+        b = self._get_array(b).ravel()
         xi_uv = self._get_array(xi_uv)
-        zeta_uv = self._get_array(zeta_uv)
-        a = self._get_array(a)
-        b = self._get_array(b)
-        
+        zeta_uv = self._get_array(zeta_uv).ravel()
+        M = np.asarray(M)
+        Mc = np.asarray(Mc)
+
         total_size = len(M) + 2 * len(Mc)
         if total_size == 0:
-            return [-self.xp.inf, self.xp.inf]
-        
-        omega = self.xp.empty(total_size)
-        rho = self.xp.empty(total_size)
+            return [-xp.inf, xp.inf]
+
+        omega = xp.empty(total_size)
+        rho = xp.empty(total_size)
         idx = 0
-        
-        # Pre-compute common terms
+
         xi_a_zeta = (xi_uv @ a) + zeta_uv
         xi_b = xi_uv @ b
-        
-        if len(M) > 0:
-            omega[idx:idx+len(M)] = (-SM * xi_b[M]).ravel()
-            rho[idx:idx+len(M)] = (SM * xi_a_zeta[M]).ravel()
+
+        if M.size > 0:
+            omega_m = (-SM * xi_b[M].ravel())
+            rho_m = (SM * xi_a_zeta[M].ravel())
+            omega[idx:idx+len(M)] = omega_m
+            rho[idx:idx+len(M)] = rho_m
             idx += len(M)
-        
-        if len(Mc) > 0:
-            Dtc_xi_b = xi_b[Mc]
-            Dtc_xi_a_zeta = xi_a_zeta[Mc]
-            
+
+        if Mc.size > 0:
+            Dtc_xi_b = xi_b[Mc].ravel()
+            Dtc_xi_a_zeta = xi_a_zeta[Mc].ravel()
+
             omega[idx:idx+len(Mc)] = Dtc_xi_b
             omega[idx+len(Mc):idx+2*len(Mc)] = -Dtc_xi_b
-            
+
             rho[idx:idx+len(Mc)] = -Dtc_xi_a_zeta
             rho[idx+len(Mc):idx+2*len(Mc)] = Dtc_xi_a_zeta
-        
+
         return self.compute_bounds_3(omega, rho)
 
-# Global instance
+
+# Tạo instance toàn cục
 _optimizer = OptimizedCompute()
 
-# Convenience functions
 def compute_Zu_3(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
     return _optimizer.compute_Zu_3(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N)
 
@@ -797,3 +714,4 @@ def compute_Zv_3(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
 
 def compute_Zt_3(M, SM, Mc, xi_uv, zeta_uv, a, b):
     return _optimizer.compute_Zt_3(M, SM, Mc, xi_uv, zeta_uv, a, b)
+
