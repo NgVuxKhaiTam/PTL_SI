@@ -124,13 +124,12 @@ import numpy as np
 def divide_and_conquer_TF_recursive(
     X, X0, a, b, Mobs, N, nT, K, p, B, Q,
     lambda_0, lambda_tilde, ak_weights,
-    z_min, z_max, use_gpu=None
+    z_min, z_max, use_gpu=True
 ):
     """
     Phiên bản CHIA ĐỂ TRỊ cải tiến, cho phép CPU/GPU linh hoạt.
     """
     # Quyết định xp (NumPy hoặc CuPy)
-    use_gpu = GPU_AVAILABLE if use_gpu is None else (use_gpu and GPU_AVAILABLE)
     xp = cp if use_gpu else np
 
     # Chuyển input lên GPU nếu cần
