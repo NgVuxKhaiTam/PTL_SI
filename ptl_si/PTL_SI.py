@@ -354,40 +354,72 @@ def divide_and_conquer_TF_recursive(
     B_gpu = _to_gpu(B)
     Q_gpu = _to_gpu(Q)
 
-    # Hàm nội bộ sử dụng Python float cho z
+    # Chuyển a, b lên GPU
+    a_gpu = _to_gpu(a).ravel()
+    b_gpu = _to_gpu(b).ravel()
+    # Tạo a_tilde cho biến kiểm soát
+    a_tilde = xp.concatenate([w * xp.ones(p) for w in ak_weights] + [xp.ones(p)]).reshape(-1, 1)
+
     intervals = []
     EPS = 1e-6
+
     def rec(z_lo, z_hi):
-        if z_lo>z_hi:
+        if z_lo > z_hi:
             return
-        z_mid=(z_lo+z_hi)/2
+        z_mid = (z_lo + z_hi) / 2.0
         # Tính Y trên GPU
-        a_arr = _to_gpu(a).ravel()
-        b_arr = _to_gpu(b).ravel()
-        Yz = (a_arr + b_arr*z_mid).ravel()
-        Y0z = Q_gpu@Yz
+        Yz = (a_gpu + b_gpu * z_mid).ravel()
+        Y0z = Q_gpu @ Yz
         # Chuyển về CPU cho routines
-        Xc, Yc, X0c, Y0c, Bc = _to_cpu(X_gpu), _to_cpu(Yz), _to_cpu(X0_gpu), _to_cpu(Y0z), _to_cpu(B_gpu)
-        tz,wz,dz,bz = transfer_learning_hdr.TransFusion(Xc,Yc,X0c,Y0c,Bc,N,p,K,lambda_0,lambda_tilde,ak_weights)
-        thetaO,SO,O,XO,Oc,XOc = utils.construct_thetaO_SO_O_XO_Oc_XOc(tz,Xc)
-        deltaL,SL,L,X0L,Lc,X0Lc = utils.construct_detlaL_SL_L_X0L_Lc_X0Lc(dz,X0c)
-        betaM,M,SM,Mc=utils.construct_betaM_M_SM_Mc(bz)
-        phi_u,iota_u,xi_uv,zeta_uv=sub_prob.calculate_phi_iota_xi_zeta(
-            Xc,SO,O,XO,X0c,SL,L,X0L,p,Bc,_to_cpu(Q_gpu),
-            lambda_0,lambda_tilde,_to_cpu(a_tilde),N,nT)
-        lu,ru=compute_Zu_3(SO,O,XO,Oc,XOc,a_arr,b_arr,lambda_0,a_tilde,N)
-        lv,rv=compute_Zv_3(SL,L,X0L,Lc,X0Lc,phi_u,iota_u,a_arr,b_arr,lambda_tilde,nT)
-        lt,rt=compute_Zt_3(M,SM,Mc,xi_uv,zeta_uv,a_arr,b_arr)
-        l=float(max(lu,lv,lt)); r=float(min(ru,rv,rt))
-        if r<l:
-            rec(z_lo,z_mid-EPS)
-            rec(z_mid+EPS,z_hi)
+        Xc = _to_cpu(X_gpu)
+        Yc = _to_cpu(Yz)
+        X0c = _to_cpu(X0_gpu)
+        Y0c = _to_cpu(Y0z)
+        Bc = _to_cpu(B_gpu)
+
+        tz, wz, dz, bz = transfer_learning_hdr.TransFusion(
+            Xc, Yc, X0c, Y0c, Bc,
+            N, p, K, lambda_0, lambda_tilde, ak_weights
+        )
+        thetaO, SO, O, XO, Oc, XOc = utils.construct_thetaO_SO_O_XO_Oc_XOc(tz, Xc)
+        deltaL, SL, L, X0L, Lc, X0Lc = utils.construct_detlaL_SL_L_X0L_Lc_X0Lc(dz, X0c)
+        betaM, M, SM, Mc = utils.construct_betaM_M_SM_Mc(bz)
+        phi_u, iota_u, xi_uv, zeta_uv = sub_prob.calculate_phi_iota_xi_zeta(
+            Xc, SO, O, XO, X0c,
+            SL, L, X0L, p, Bc, _to_cpu(Q_gpu),
+            lambda_0, lambda_tilde, _to_cpu(a_tilde),
+            N, nT
+        )
+
+        lu, ru = compute_Zu_3(SO, O, XO, Oc, XOc, a_gpu, b_gpu, lambda_0, a_tilde, N)
+        lv, rv = compute_Zv_3(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a_gpu, b_gpu, lambda_tilde, nT)
+        lt, rt = compute_Zt_3(M, SM, Mc, xi_uv, zeta_uv, a_gpu, b_gpu)
+
+        l = float(max(lu, lv, lt))
+        r = float(min(ru, rv, rt))
+        if r < l:
+            rec(z_lo, z_mid - EPS)
+            rec(z_mid + EPS, z_hi)
             return
-        if M==Mobs:
-            intervals.append((l,r))
-        rec(z_lo,l-EPS)
-        rec(r+EPS,z_hi)
-    rec(float(z_min),float(z_max))
+
+        if M == Mobs:
+            intervals.append((l, r))
+
+        rec(z_lo, l - EPS)
+        rec(r + EPS, z_hi)
+
+    rec(float(z_min), float(z_max))
+    if not intervals:
+        return []
+    intervals.sort(key=lambda x: x[0])
+    merged = [intervals[0]]
+    for cl, cr in intervals[1:]:
+        il, ir = merged[-1]
+        if cl <= ir + EPS:
+            merged[-1] = (il, max(ir, cr))
+        else:
+            merged.append((cl, cr))
+    return merged
     if not intervals:
         return []
     intervals.sort(key=lambda x:x[0])
@@ -430,7 +462,8 @@ def PTL_SI_TF_recursive(
     out=[]
     for j in M_obs:
         etaj,etajTY=utils.construct_test_statistic(j,X0c[:,M_obs],Y,M_obs,nT,N)
-        a,b = utils.calculate_a_b(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N)
+                # Không ép về scalar, giữ etaj và etajTY dưới dạng mảng nếu cần
+        a,b = utils.calculate_a_b(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N(etaj, Y, utils.construct_Sigma(SigmaS_list, Sigma0), N)
         intervals = divide_and_conquer_TF_recursive(
             X, X0c, a, b, M_obs, N, nT, K, p, B, Q,
             lambda_0, lambda_tilde, ak_weights, z_min, z_max,
@@ -441,6 +474,7 @@ def PTL_SI_TF_recursive(
         )
         out.append((j, pj))
     return out
+
 
 
 
