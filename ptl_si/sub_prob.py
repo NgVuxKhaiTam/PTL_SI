@@ -12,7 +12,8 @@ try:
         xp = np
         using_gpu = False
         print("CPU")
-except Exception:  # pragma: no cover - cupy not installed
+except Exception as e:  # pragma: no cover - cupy not installed
+    print("Lỗi khi import cupy:", e)
     cp = None
     xp = np
     using_gpu = False
