@@ -4,10 +4,17 @@ import sub_prob
 import random
 import numpy as np
 
+try:
+    import cupy as cp
+    xp = cp
+except Exception:  # pragma: no cover - cupy might not be installed
+    cp = None
+    xp = np
+
 
 def divide_and_conquer_TF(X, X0, a, b, Mobs, N, nT, K, p, B, Q, lambda_0, lambda_tilde, ak_weights, z_min, z_max):
     z = z_min
-    a_tilde = np.concatenate([ak_weights[k] * np.ones(p) for k in range(K)] + [np.ones(p)]).reshape(-1, 1)
+    a_tilde = xp.concatenate([ak_weights[k] * xp.ones(p) for k in range(K)] + [xp.ones(p)]).reshape(-1, 1)
     intervals = []
     while z < z_max:
         Yz = a + b*z
