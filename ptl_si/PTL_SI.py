@@ -23,11 +23,11 @@ def divide_and_conquer_TF(X, X0, a, b, Mobs, N, nT, K, p, B, Q, lambda_0, lambda
         # utils.check_KKT_theta(XO, XOc, Yz, O, Oc, thetaO, SO, lambda_0, a_tilde, N)
         # utils.check_KKT_delta(X0L, X0Lc, Yz, L, Lc, deltaL, SL, phi_u, iota_u, lambda_tilde, nT)
        
-        lu, ru = sub_prob.compute_Zu(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N)
+        lu, ru = sub_prob.compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N)
 
-        lv, rv = sub_prob.compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT)
+        lv, rv = sub_prob.compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT)
 
-        lt, rt = sub_prob.compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b)
+        lt, rt = sub_prob.compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b)
 
         r = min(ru, rv, rt)
         l = max(lu, lv, lt)
@@ -134,9 +134,9 @@ def divide_and_conquer_OTL(XI, X0, a, b, Mobs, nI, nT, p, Q, P, lambda_w, lambda
         
         lu, ru = sub_prob.compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI)
 
-        lv, rv = sub_prob.compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_del, nT)
+        lv, rv = sub_prob.compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_del, nT)
 
-        lt, rt = sub_prob.compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b)
+        lt, rt = sub_prob.compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b)
 
         r = min(ru, rv, rt)
         l = max(lu, lv, lt)
