@@ -4,7 +4,16 @@ pinv = np_pinv  # retain original name for CPU path
 
 try:
     import cupy as cp
-    if hasattr(cp, "cuda") and cp.cuda.runtime.is_available():
+    # Determine whether a CUDA device is available in a version agnostic way
+    try:
+        if hasattr(cp, "is_available"):
+            available = cp.is_available()
+        else:
+            available = cp.cuda.runtime.getDeviceCount() > 0
+    except Exception:
+        available = False
+
+    if available:
         xp = cp
         using_gpu = True
         print("GPU")
