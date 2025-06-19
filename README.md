@@ -25,3 +25,9 @@ We provide several Jupyter notebooks demonstrating how to use the `ptl_si` packa
   - `ex1_p_value_TF.ipynb` - Example for computing p-value for TransFusion
   - `ex2_p_value_OTL.ipynb` -  Example for computing p-value for Oracle Trans-Lasso
   - `ex3_pivot.ipynb` - Check the uniformity of the pivot
+
+## Parallel Execution
+
+The main inference routines `PTL_SI_TF` and `PTL_SI_OTL` accept an optional
+`n_jobs` argument.  When set to a value greater than one, p-values for different
+selected features are computed in parallel using multiple processes.
