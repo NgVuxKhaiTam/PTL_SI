@@ -1,5 +1,25 @@
 import numpy as np
-from numpy.linalg import pinv
+from numpy.linalg import pinv as np_pinv
+pinv = np_pinv  # retain original name for CPU path
+
+try:
+    import cupy as cp
+    if hasattr(cp, "cuda") and cp.cuda.runtime.is_available():
+        xp = cp
+        using_gpu = True
+    else:
+        xp = np
+        using_gpu = False
+except Exception:  # pragma: no cover - cupy not installed
+    cp = None
+    xp = np
+    using_gpu = False
+
+def _pinv(mat):
+    return xp.linalg.pinv(mat) if using_gpu else np_pinv(mat)
+
+def _to_cpu(arr):
+    return cp.asnumpy(arr) if using_gpu else arr
 
 
 def _interval_bounds(psi, gamma):
@@ -104,17 +124,24 @@ def compute_Zu(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
 
 
 def compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
-    """Vectorized version of :func:`compute_Zu` for better performance."""
+    """Vectorized version of :func:`compute_Zu` with optional GPU support."""
+    SO = xp.asarray(SO)
+    XO = xp.asarray(XO)
+    XOc = xp.asarray(XOc)
+    a = xp.asarray(a)
+    b = xp.asarray(b)
+    a_tilde = xp.asarray(a_tilde)
+
     a_tilde_O = a_tilde[O]
     a_tilde_Oc = a_tilde[Oc]
 
-    psi0 = np.array([])
-    gamma0 = np.array([])
-    psi1 = np.array([])
-    gamma1 = np.array([])
+    psi0 = xp.array([])
+    gamma0 = xp.array([])
+    psi1 = xp.array([])
+    gamma1 = xp.array([])
 
     if len(O) > 0:
-        inv = pinv(XO.T @ XO)
+        inv = _pinv(XO.T @ XO)
         XO_plus = inv @ XO.T
 
         XO_plus_b = XO_plus @ b
@@ -127,10 +154,10 @@ def compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
 
     if len(Oc) > 0:
         if len(O) == 0:
-            proj = np.eye(N)
+            proj = xp.eye(N)
             temp2 = 0
         else:
-            proj = np.eye(N) - XO @ XO_plus
+            proj = xp.eye(N) - XO @ XO_plus
             XO_O_plus = XO @ inv
             temp2 = (XOc.T @ XO_O_plus) @ (a_tilde_O * SO)
             temp2 = temp2 / a_tilde_Oc
@@ -139,17 +166,20 @@ def compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
         temp1 = (XOc_O_proj / a_tilde_Oc) / (lambda_0 * N)
 
         term_b = temp1 @ b
-        psi1 = np.concatenate([term_b.ravel(), -term_b.ravel()])
+        psi1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
 
         term_a = temp1 @ a
-        ones_vec = np.ones_like(term_a)
-        gamma1 = np.concatenate([(ones_vec - temp2 - term_a).ravel(),
+        ones_vec = xp.ones_like(term_a)
+        gamma1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
                                  (ones_vec + temp2 + term_a).ravel()])
 
-    psi = np.concatenate((psi0, psi1))
-    gamma = np.concatenate((gamma0, gamma1))
+    psi = xp.concatenate((psi0, psi1))
+    gamma = xp.concatenate((gamma0, gamma1))
 
-    return _interval_bounds(psi, gamma)
+    psi_cpu = _to_cpu(psi)
+    gamma_cpu = _to_cpu(gamma)
+
+    return _interval_bounds(psi_cpu, gamma_cpu)
 
 def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     nu0 = np.array([])
@@ -161,7 +191,7 @@ def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     phi_b = phi_u @ b
 
     if len(L) > 0:
-        inv = pinv(X0L.T @ X0L)
+        inv = _pinv(X0L.T @ X0L)
         X0L_plus = inv @ X0L.T
 
         # Calculate nu0
@@ -221,17 +251,25 @@ def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
 
 
 def compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
-    """Vectorized version of :func:`compute_Zv` for better performance."""
-    nu0 = np.array([])
-    kappa0 = np.array([])
-    nu1 = np.array([])
-    kappa1 = np.array([])
+    """Vectorized version of :func:`compute_Zv` with optional GPU support."""
+    SL = xp.asarray(SL)
+    X0L = xp.asarray(X0L)
+    X0Lc = xp.asarray(X0Lc)
+    phi_u = xp.asarray(phi_u)
+    iota_u = xp.asarray(iota_u)
+    a = xp.asarray(a)
+    b = xp.asarray(b)
+
+    nu0 = xp.array([])
+    kappa0 = xp.array([])
+    nu1 = xp.array([])
+    kappa1 = xp.array([])
 
     phi_a_iota = (phi_u @ a) + iota_u
     phi_b = phi_u @ b
 
     if len(L) > 0:
-        inv = pinv(X0L.T @ X0L)
+        inv = _pinv(X0L.T @ X0L)
         X0L_plus = inv @ X0L.T
 
         X0L_plus_phi_b = X0L_plus @ phi_b
@@ -244,10 +282,10 @@ def compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT)
 
     if len(Lc) > 0:
         if len(L) == 0:
-            proj = np.eye(nT)
+            proj = xp.eye(nT)
             temp2 = 0
         else:
-            proj = np.eye(nT) - X0L @ X0L_plus
+            proj = xp.eye(nT) - X0L @ X0L_plus
             X0L_T_plus = X0L @ inv
             temp2 = (X0Lc.T @ X0L_T_plus) @ SL
 
@@ -255,17 +293,20 @@ def compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT)
         temp1 = X0Lc_T_proj / (lambda_tilde * nT)
 
         term_b = temp1 @ phi_b
-        nu1 = np.concatenate([term_b.ravel(), -term_b.ravel()])
+        nu1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
 
         term_a = temp1 @ phi_a_iota
-        ones_vec = np.ones_like(term_a)
-        kappa1 = np.concatenate([(ones_vec - temp2 - term_a).ravel(),
+        ones_vec = xp.ones_like(term_a)
+        kappa1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
                                  (ones_vec + temp2 + term_a).ravel()])
 
-    nu = np.concatenate((nu0, nu1))
-    kappa = np.concatenate((kappa0, kappa1))
+    nu = xp.concatenate((nu0, nu1))
+    kappa = xp.concatenate((kappa0, kappa1))
 
-    return _interval_bounds(nu, kappa)
+    nu_cpu = _to_cpu(nu)
+    kappa_cpu = _to_cpu(kappa)
+
+    return _interval_bounds(nu_cpu, kappa_cpu)
 
 
 def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
@@ -316,11 +357,17 @@ def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
 
 
 def compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b):
-    """Vectorized version of :func:`compute_Zt` for better performance."""
-    omega0 = np.array([])
-    rho0 = np.array([])
-    omega1 = np.array([])
-    rho1 = np.array([])
+    """Vectorized version of :func:`compute_Zt` with optional GPU support."""
+    SM = xp.asarray(SM)
+    xi_uv = xp.asarray(xi_uv)
+    zeta_uv = xp.asarray(zeta_uv)
+    a = xp.asarray(a)
+    b = xp.asarray(b)
+
+    omega0 = xp.array([])
+    rho0 = xp.array([])
+    omega1 = xp.array([])
+    rho1 = xp.array([])
 
     xi_a_zeta = (xi_uv @ a) + zeta_uv
     xi_b = xi_uv @ b
@@ -336,13 +383,16 @@ def compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b):
         Dtc_xi_a_zeta = xi_a_zeta[Mc]
         Dtc_xi_b = xi_b[Mc]
 
-        omega1 = np.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
-        rho1 = np.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
+        omega1 = xp.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
+        rho1 = xp.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
 
-    omega = np.concatenate((omega0, omega1))
-    rho = np.concatenate((rho0, rho1))
+    omega = xp.concatenate((omega0, omega1))
+    rho = xp.concatenate((rho0, rho1))
 
-    return _interval_bounds(omega, rho)
+    omega_cpu = _to_cpu(omega)
+    rho_cpu = _to_cpu(rho)
+
+    return _interval_bounds(omega_cpu, rho_cpu)
 
 def compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
     psi0 = np.array([])
