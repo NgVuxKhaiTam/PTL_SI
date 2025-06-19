@@ -3,6 +3,7 @@ import transfer_learning_hdr
 import sub_prob
 import random
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 
 
 def divide_and_conquer_TF(X, X0, a, b, Mobs, N, nT, K, p, B, Q, lambda_0, lambda_tilde, ak_weights, z_min, z_max):
@@ -43,7 +44,19 @@ def divide_and_conquer_TF(X, X0, a, b, Mobs, N, nT, K, p, B, Q, lambda_0, lambda
     return intervals
 
 
-def PTL_SI_TF(X0, Y0, XS_list, YS_list, lambda_0, lambda_tilde, ak_weights, SigmaS_list, Sigma0, z_min=-20, z_max=20):
+def _pval_TF_worker(j, X, X0, X0M, Y, M_obs, N, nT, K, p, B, Q,
+                    lambda_0, lambda_tilde, ak_weights, Sigma, z_min, z_max):
+    etaj, etajTY = utils.construct_test_statistic(j, X0M, Y, M_obs, nT, N)
+    a, b = utils.calculate_a_b(etaj, Y, Sigma, N)
+    intervals = divide_and_conquer_TF(
+        X, X0, a, b, M_obs, N, nT, K, p, B, Q,
+        lambda_0, lambda_tilde, ak_weights, z_min, z_max)
+    pj_sel = utils.calculate_TN_p_value(intervals, etaj, etajTY, Sigma, 0)
+    return j, pj_sel
+
+
+def PTL_SI_TF(X0, Y0, XS_list, YS_list, lambda_0, lambda_tilde, ak_weights,
+              SigmaS_list, Sigma0, z_min=-20, z_max=20, n_jobs=1):
     K = len(YS_list)
     nS = YS_list[0].shape[0]
     nT = Y0.shape[0]
@@ -64,15 +77,18 @@ def PTL_SI_TF(X0, Y0, XS_list, YS_list, lambda_0, lambda_tilde, ak_weights, Sigm
     X0M = X0[:, M_obs]
     Q = utils.construct_Q(nT, N)
 
-    p_sel_list = []
-    
-    for j in M_obs:
-        etaj, etajTY = utils.construct_test_statistic(j, X0M, Y, M_obs, nT, N)
-        a, b = utils.calculate_a_b(etaj, Y, Sigma, N)
-        intervals = divide_and_conquer_TF(X, X0, a, b, M_obs, N, nT, K, p, B, Q, lambda_0, lambda_tilde, ak_weights, z_min, z_max)
-        pj_sel = utils.calculate_TN_p_value(intervals, etaj, etajTY, Sigma, 0)
-
-        p_sel_list.append((j, pj_sel))
+    if n_jobs == 1:
+        p_sel_list = [_pval_TF_worker(j, X, X0, X0M, Y, M_obs, N, nT, K, p, B,
+                                       Q, lambda_0, lambda_tilde, ak_weights,
+                                       Sigma, z_min, z_max)
+                       for j in M_obs]
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            futures = [ex.submit(_pval_TF_worker, j, X, X0, X0M, Y, M_obs, N,
+                                 nT, K, p, B, Q, lambda_0, lambda_tilde,
+                                 ak_weights, Sigma, z_min, z_max)
+                       for j in M_obs]
+            p_sel_list = [f.result() for f in futures]
     
     return p_sel_list
 
@@ -152,7 +168,19 @@ def divide_and_conquer_OTL(XI, X0, a, b, Mobs, nI, nT, p, Q, P, lambda_w, lambda
     return intervals
 
 
-def PTL_SI_OTL(X0, Y0, XI_list, YI_list, lambda_w, lambda_del, SigmaI_list, Sigma0, z_min=-20, z_max=20):
+def _pval_OTL_worker(j, XI, X0, X0M, Y, M_obs, nI, nT, p, Q, P,
+                     lambda_w, lambda_del, Sigma, z_min, z_max):
+    etaj, etajTY = utils.construct_test_statistic(j, X0M, Y, M_obs, nT, nI + nT)
+    a, b = utils.calculate_a_b(etaj, Y, Sigma, nI + nT)
+    intervals = divide_and_conquer_OTL(
+        XI, X0, a, b, M_obs, nI, nT, p, Q, P,
+        lambda_w, lambda_del, z_min, z_max)
+    pj_sel = utils.calculate_TN_p_value(intervals, etaj, etajTY, Sigma, 0)
+    return j, pj_sel
+
+
+def PTL_SI_OTL(X0, Y0, XI_list, YI_list, lambda_w, lambda_del, SigmaI_list,
+               Sigma0, z_min=-20, z_max=20, n_jobs=1):
     nS = YI_list[0].shape[0]
     nT = Y0.shape[0]
     nI = nS * len(YI_list)
@@ -174,14 +202,18 @@ def PTL_SI_OTL(X0, Y0, XI_list, YI_list, lambda_w, lambda_del, SigmaI_list, Sigm
     Q = utils.construct_Q(nT, N)
     P = utils.construct_P(nT, nI)
 
-    p_sel_list = []
-    
-    for j in M_obs:
-        etaj, etajTY = utils.construct_test_statistic(j, X0M, Y, M_obs, nT, N)
-        a, b = utils.calculate_a_b(etaj, Y, Sigma, N)
-        intervals = divide_and_conquer_OTL(XI, X0, a, b, M_obs, nI, nT, p, Q, P, lambda_w, lambda_del, z_min, z_max)
-        pj_sel = utils.calculate_TN_p_value(intervals, etaj, etajTY, Sigma, 0)
-        p_sel_list.append((j, pj_sel))
+    if n_jobs == 1:
+        p_sel_list = [_pval_OTL_worker(j, XI, X0, X0M, Y, M_obs, nI, nT, p,
+                                       Q, P, lambda_w, lambda_del, Sigma,
+                                       z_min, z_max)
+                       for j in M_obs]
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            futures = [ex.submit(_pval_OTL_worker, j, XI, X0, X0M, Y, M_obs, nI,
+                                 nT, p, Q, P, lambda_w, lambda_del, Sigma,
+                                 z_min, z_max)
+                       for j in M_obs]
+            p_sel_list = [f.result() for f in futures]
     
     return p_sel_list
 
