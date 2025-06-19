@@ -221,64 +221,6 @@ def compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
     return _interval_bounds(psi_cpu, gamma_cpu)
 
 
-def compute_Zu_ver3(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
-    """Further optimized GPU version of :func:`compute_Zu`.
-
-    This implementation avoids transferring intermediate results back to the
-    host by using :func:`_interval_bounds_ver3`.
-    """
-    SO = xp.asarray(SO)
-    XO = xp.asarray(XO)
-    XOc = xp.asarray(XOc)
-    a = xp.asarray(a)
-    b = xp.asarray(b)
-    a_tilde = xp.asarray(a_tilde)
-
-    a_tilde_O = a_tilde[O]
-    a_tilde_Oc = a_tilde[Oc]
-
-    psi0 = xp.array([])
-    gamma0 = xp.array([])
-    psi1 = xp.array([])
-    gamma1 = xp.array([])
-
-    if len(O) > 0:
-        inv = _pinv(XO.T @ XO)
-        XO_plus = inv @ XO.T
-
-        XO_plus_b = XO_plus @ b
-        psi0 = (-SO * XO_plus_b).ravel()
-
-        XO_plus_a = XO_plus @ a
-        gamma0_term_inv = inv @ (a_tilde_O * SO)
-        gamma0 = SO * XO_plus_a - N * lambda_0 * SO * gamma0_term_inv
-        gamma0 = gamma0.ravel()
-
-    if len(Oc) > 0:
-        if len(O) == 0:
-            proj = xp.eye(N)
-            temp2 = 0
-        else:
-            proj = xp.eye(N) - XO @ XO_plus
-            XO_O_plus = XO @ inv
-            temp2 = (XOc.T @ XO_O_plus) @ (a_tilde_O * SO)
-            temp2 = temp2 / a_tilde_Oc
-
-        XOc_O_proj = XOc.T @ proj
-        temp1 = (XOc_O_proj / a_tilde_Oc) / (lambda_0 * N)
-
-        term_b = temp1 @ b
-        psi1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
-
-        term_a = temp1 @ a
-        ones_vec = xp.ones_like(term_a)
-        gamma1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
-                                 (ones_vec + temp2 + term_a).ravel()])
-
-    psi = xp.concatenate((psi0, psi1))
-    gamma = xp.concatenate((gamma0, gamma1))
-
-    return _interval_bounds_ver3(psi, gamma)
 
 def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     nu0 = np.array([])
@@ -408,64 +350,6 @@ def compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT)
     return _interval_bounds(nu_cpu, kappa_cpu)
 
 
-def compute_Zv_ver3(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
-    """Further optimized GPU version of :func:`compute_Zv`.
-
-    Keeps all computations on the ``xp`` backend and utilises
-    :func:`_interval_bounds_ver3` for the final bounds computation.
-    """
-    SL = xp.asarray(SL)
-    X0L = xp.asarray(X0L)
-    X0Lc = xp.asarray(X0Lc)
-    phi_u = xp.asarray(phi_u)
-    iota_u = xp.asarray(iota_u)
-    a = xp.asarray(a)
-    b = xp.asarray(b)
-
-    nu0 = xp.array([])
-    kappa0 = xp.array([])
-    nu1 = xp.array([])
-    kappa1 = xp.array([])
-
-    phi_a_iota = (phi_u @ a) + iota_u
-    phi_b = phi_u @ b
-
-    if len(L) > 0:
-        inv = _pinv(X0L.T @ X0L)
-        X0L_plus = inv @ X0L.T
-
-        X0L_plus_phi_b = X0L_plus @ phi_b
-        nu0 = (-SL * X0L_plus_phi_b).ravel()
-
-        X0L_plus_a = X0L_plus @ phi_a_iota
-        kappa0_term_inv = inv @ SL
-        kappa0 = SL * X0L_plus_a - (nT * lambda_tilde) * SL * kappa0_term_inv
-        kappa0 = kappa0.ravel()
-
-    if len(Lc) > 0:
-        if len(L) == 0:
-            proj = xp.eye(nT)
-            temp2 = 0
-        else:
-            proj = xp.eye(nT) - X0L @ X0L_plus
-            X0L_T_plus = X0L @ inv
-            temp2 = (X0Lc.T @ X0L_T_plus) @ SL
-
-        X0Lc_T_proj = X0Lc.T @ proj
-        temp1 = X0Lc_T_proj / (lambda_tilde * nT)
-
-        term_b = temp1 @ phi_b
-        nu1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
-
-        term_a = temp1 @ phi_a_iota
-        ones_vec = xp.ones_like(term_a)
-        kappa1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
-                                 (ones_vec + temp2 + term_a).ravel()])
-
-    nu = xp.concatenate((nu0, nu1))
-    kappa = xp.concatenate((kappa0, kappa1))
-
-    return _interval_bounds_ver3(nu, kappa)
 
 
 def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
@@ -554,44 +438,6 @@ def compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b):
     return _interval_bounds(omega_cpu, rho_cpu)
 
 
-def compute_Zt_ver3(M, SM, Mc, xi_uv, zeta_uv, a, b):
-    """Further optimized GPU version of :func:`compute_Zt`.
-
-    Utilises :func:`_interval_bounds_ver3` to keep computations on the GPU when
-    possible.
-    """
-    SM = xp.asarray(SM)
-    xi_uv = xp.asarray(xi_uv)
-    zeta_uv = xp.asarray(zeta_uv)
-    a = xp.asarray(a)
-    b = xp.asarray(b)
-
-    omega0 = xp.array([])
-    rho0 = xp.array([])
-    omega1 = xp.array([])
-    rho1 = xp.array([])
-
-    xi_a_zeta = (xi_uv @ a) + zeta_uv
-    xi_b = xi_uv @ b
-
-    if len(M) > 0:
-        Dt_xi_a_zeta = xi_a_zeta[M]
-        Dt_xi_b = xi_b[M]
-
-        omega0 = (-SM * Dt_xi_b).ravel()
-        rho0 = (SM * Dt_xi_a_zeta).ravel()
-
-    if len(Mc) > 0:
-        Dtc_xi_a_zeta = xi_a_zeta[Mc]
-        Dtc_xi_b = xi_b[Mc]
-
-        omega1 = xp.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
-        rho1 = xp.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
-
-    omega = xp.concatenate((omega0, omega1))
-    rho = xp.concatenate((rho0, rho1))
-
-    return _interval_bounds_ver3(omega, rho)
 
 def compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
     psi0 = np.array([])
@@ -660,58 +506,6 @@ def compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
     return [lu, ru]
 
 
-def compute_Zu_otl_ver3(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
-    """GPU-friendly version of :func:`compute_Zu_otl`."""
-    SO = xp.asarray(SO)
-    XIO = xp.asarray(XIO)
-    XIOc = xp.asarray(XIOc)
-    a = xp.asarray(a)
-    b = xp.asarray(b)
-    P = xp.asarray(P)
-
-    psi0 = xp.array([])
-    gamma0 = xp.array([])
-    psi1 = xp.array([])
-    gamma1 = xp.array([])
-
-    if len(O) > 0:
-        inv = _pinv(XIO.T @ XIO)
-        XIO_plus = inv @ XIO.T
-
-        XIO_plus_Pb = XIO_plus @ P @ b
-        psi0 = (-SO * XIO_plus_Pb).ravel()
-
-        XIO_plus_Pa = XIO_plus @ P @ a
-        gamma0_term_inv = inv @ SO
-
-        gamma0 = SO * XIO_plus_Pa - nI * lambda_w * SO * gamma0_term_inv
-        gamma0 = gamma0.ravel()
-
-    if len(Oc) > 0:
-        if len(O) == 0:
-            proj = xp.eye(nI)
-            temp2 = 0
-        else:
-            proj = xp.eye(nI) - XIO @ XIO_plus
-            XIO_T_plus = XIO @ inv
-            temp2 = (XIOc.T @ XIO_T_plus) @ SO
-
-        XIOc_T_proj = XIOc.T @ proj
-        temp1 = XIOc_T_proj / (lambda_w * nI)
-
-        term_Pb = temp1 @ P @ b
-        psi1 = xp.concatenate([term_Pb.ravel(), -term_Pb.ravel()])
-
-        term_Pa = temp1 @ P @ a
-        ones_vec = xp.ones_like(term_Pa)
-
-        gamma1 = xp.concatenate([(ones_vec - temp2 - term_Pa).ravel(),
-                                 (ones_vec + temp2 + term_Pa).ravel()])
-
-    psi = xp.concatenate((psi0, psi1))
-    gamma = xp.concatenate((gamma0, gamma1))
-
-    return _interval_bounds_ver3(psi, gamma)
 
 def calculate_phi_iota_xi_zeta(X, SO, O, XO, X0, SL, L, X0L, p, B, Q, lambda_0, lambda_tilde, a_tilde, N, nT):
     phi_u = Q.copy()
