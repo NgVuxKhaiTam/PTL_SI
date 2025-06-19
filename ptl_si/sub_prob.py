@@ -1,5 +1,45 @@
 import numpy as np
+try:
+    import cupy as cp  # type: ignore
+except Exception:  # cupy may not be installed or GPU unavailable
+    cp = None
+
 from numpy.linalg import pinv
+
+
+def _interval_bounds(psi, gamma, xp=np):
+    """Vectorized computation of interval bounds.
+
+    Parameters
+    ----------
+    psi : np.ndarray
+        Coefficients for the interval constraints.
+    gamma : np.ndarray
+        Offsets for the interval constraints.
+
+    Returns
+    -------
+    list
+        Lower and upper bounds for the parameter.
+    """
+
+    psi = xp.asarray(psi)
+    gamma = xp.asarray(gamma)
+
+    if psi.size == 0:
+        return [-np.inf, np.inf]
+
+    mask_zero = psi == 0
+    if xp.any(mask_zero & (gamma < 0)):
+        return [np.inf, -np.inf]
+
+    pos = psi > 0
+    neg = psi < 0
+
+    ru = xp.min(gamma[pos] / psi[pos]) if xp.any(pos) else xp.inf
+    lu = xp.max(gamma[neg] / psi[neg]) if xp.any(neg) else -xp.inf
+
+    return [float(lu), float(ru)]
 
 
 def compute_Zu(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
@@ -70,6 +110,59 @@ def compute_Zu(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N):
                 lu = val
     return [lu, ru]
 
+
+def compute_Zu_ver2(SO, O, XO, Oc, XOc, a, b, lambda_0, a_tilde, N, use_gpu=False):
+    """Vectorized version of :func:`compute_Zu` with optional GPU acceleration."""
+    xp = cp if use_gpu and cp is not None else np
+    pinv_local = xp.linalg.pinv if xp is not np else pinv
+
+    a_tilde_O = xp.asarray(a_tilde[O])
+    a_tilde_Oc = xp.asarray(a_tilde[Oc])
+
+    psi0 = xp.array([])
+    gamma0 = xp.array([])
+    psi1 = xp.array([])
+    gamma1 = xp.array([])
+
+    if len(O) > 0:
+        XO_gpu = xp.asarray(XO)
+        inv = pinv_local(XO_gpu.T @ XO_gpu)
+        XO_plus = inv @ XO_gpu.T
+
+        XO_plus_b = XO_plus @ xp.asarray(b)
+        psi0 = (-SO * XO_plus_b).ravel()
+
+        XO_plus_a = XO_plus @ xp.asarray(a)
+        gamma0_term_inv = inv @ (a_tilde_O * xp.asarray(SO))
+        gamma0 = SO * XO_plus_a - N * lambda_0 * SO * gamma0_term_inv
+        gamma0 = gamma0.ravel()
+
+    if len(Oc) > 0:
+        if len(O) == 0:
+            proj = xp.eye(N)
+            temp2 = 0
+        else:
+            proj = xp.eye(N) - XO_gpu @ XO_plus
+            XO_O_plus = XO_gpu @ inv
+            temp2 = (xp.asarray(XOc).T @ XO_O_plus) @ (a_tilde_O * xp.asarray(SO))
+            temp2 = temp2 / a_tilde_Oc
+
+        XOc_O_proj = xp.asarray(XOc).T @ proj
+        temp1 = (XOc_O_proj / a_tilde_Oc) / (lambda_0 * N)
+
+        term_b = temp1 @ xp.asarray(b)
+        psi1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
+
+        term_a = temp1 @ xp.asarray(a)
+        ones_vec = xp.ones_like(term_a)
+        gamma1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
+                                 (ones_vec + temp2 + term_a).ravel()])
+
+    psi = xp.concatenate((psi0, psi1))
+    gamma = xp.concatenate((gamma0, gamma1))
+
+    return _interval_bounds(psi, gamma, xp=xp)
+
 def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     nu0 = np.array([])
     kappa0 = np.array([])
@@ -139,6 +232,59 @@ def compute_Zv(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT):
     return [lv, rv]
 
 
+def compute_Zv_ver2(SL, L, X0L, Lc, X0Lc, phi_u, iota_u, a, b, lambda_tilde, nT, use_gpu=False):
+    """Vectorized version of :func:`compute_Zv` with optional GPU acceleration."""
+    xp = cp if use_gpu and cp is not None else np
+    pinv_local = xp.linalg.pinv if xp is not np else pinv
+
+    SL = xp.asarray(SL)
+    phi_a_iota = (xp.asarray(phi_u) @ xp.asarray(a)) + xp.asarray(iota_u)
+    phi_b = xp.asarray(phi_u) @ xp.asarray(b)
+
+    nu0 = xp.array([])
+    kappa0 = xp.array([])
+    nu1 = xp.array([])
+    kappa1 = xp.array([])
+
+    if len(L) > 0:
+        X0L_gpu = xp.asarray(X0L)
+        inv = pinv_local(X0L_gpu.T @ X0L_gpu)
+        X0L_plus = inv @ X0L_gpu.T
+
+        X0L_plus_phi_b = X0L_plus @ phi_b
+        nu0 = (-SL * X0L_plus_phi_b).ravel()
+
+        X0L_plus_a = X0L_plus @ phi_a_iota
+        kappa0_term_inv = inv @ SL
+        kappa0 = SL * X0L_plus_a - (nT * lambda_tilde) * SL * kappa0_term_inv
+        kappa0 = kappa0.ravel()
+
+    if len(Lc) > 0:
+        if len(L) == 0:
+            proj = xp.eye(nT)
+            temp2 = 0
+        else:
+            proj = xp.eye(nT) - X0L_gpu @ X0L_plus
+            X0L_T_plus = X0L_gpu @ inv
+            temp2 = (xp.asarray(X0Lc).T @ X0L_T_plus) @ SL
+
+        X0Lc_T_proj = xp.asarray(X0Lc).T @ proj
+        temp1 = X0Lc_T_proj / (lambda_tilde * nT)
+
+        term_b = temp1 @ phi_b
+        nu1 = xp.concatenate([term_b.ravel(), -term_b.ravel()])
+
+        term_a = temp1 @ phi_a_iota
+        ones_vec = xp.ones_like(term_a)
+        kappa1 = xp.concatenate([(ones_vec - temp2 - term_a).ravel(),
+                                 (ones_vec + temp2 + term_a).ravel()])
+
+    nu = xp.concatenate((nu0, nu1))
+    kappa = xp.concatenate((kappa0, kappa1))
+
+    return _interval_bounds(nu, kappa, xp=xp)
+
+
 def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
     omega0 = np.array([])
     rho0 = np.array([])
@@ -184,6 +330,38 @@ def compute_Zt(M, SM, Mc, xi_uv, zeta_uv, a, b):
                 lt = val
 
     return [lt, rt]
+
+
+def compute_Zt_ver2(M, SM, Mc, xi_uv, zeta_uv, a, b, use_gpu=False):
+    """Vectorized version of :func:`compute_Zt` with optional GPU acceleration."""
+    xp = cp if use_gpu and cp is not None else np
+
+    omega0 = xp.array([])
+    rho0 = xp.array([])
+    omega1 = xp.array([])
+    rho1 = xp.array([])
+
+    xi_a_zeta = (xp.asarray(xi_uv) @ xp.asarray(a)) + xp.asarray(zeta_uv)
+    xi_b = xp.asarray(xi_uv) @ xp.asarray(b)
+
+    if len(M) > 0:
+        Dt_xi_a_zeta = xi_a_zeta[M]
+        Dt_xi_b = xi_b[M]
+
+        omega0 = (-xp.asarray(SM) * Dt_xi_b).ravel()
+        rho0 = (xp.asarray(SM) * Dt_xi_a_zeta).ravel()
+
+    if len(Mc) > 0:
+        Dtc_xi_a_zeta = xi_a_zeta[Mc]
+        Dtc_xi_b = xi_b[Mc]
+
+        omega1 = xp.concatenate([Dtc_xi_b.ravel(), -Dtc_xi_b.ravel()])
+        rho1 = xp.concatenate([-Dtc_xi_a_zeta.ravel(), Dtc_xi_a_zeta.ravel()])
+
+    omega = xp.concatenate((omega0, omega1))
+    rho = xp.concatenate((rho0, rho1))
+
+    return _interval_bounds(omega, rho, xp=xp)
 
 def compute_Zu_otl(SO, O, XIO, Oc, XIOc, a, b, P, lambda_w, nI):
     psi0 = np.array([])
