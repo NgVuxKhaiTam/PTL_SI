@@ -7,9 +7,11 @@ try:
     if hasattr(cp, "cuda") and cp.cuda.runtime.is_available():
         xp = cp
         using_gpu = True
+        print("GPU")
     else:
         xp = np
         using_gpu = False
+        print("CPU")
 except Exception:  # pragma: no cover - cupy not installed
     cp = None
     xp = np
